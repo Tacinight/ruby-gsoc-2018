@@ -400,13 +400,10 @@ set_bin(st_index_t *bins, int s, st_index_t n, st_index_t v)
 #define REBUILT_TABLE_ENTRY_IND (~(st_index_t) 1)
 #define REBUILT_TABLE_BIN_IND (~(st_index_t) 1)
 
-
-
 /* Macros for marking and checking deleted entries given by their
    pointer E_PTR.  */
 #define MARK_ENTRY_DELETED(e_ptr) ((e_ptr)->hash = RESERVED_HASH_VAL)
 #define DELETED_ENTRY_P(e_ptr) ((e_ptr)->hash == RESERVED_HASH_VAL)
-
 
 /* Return the number of allocated bins of table TAB.  */
 static inline st_index_t
@@ -427,7 +424,9 @@ bins_mask(const st_table *tab)
 static inline st_index_t
 hash_bin(st_table *tab, st_data_t key)
 {
-    return do_hash(key, tab) & bins_mask(tab);
+    printf("hash: %x, mask: %x, bin: %x\n", do_hash(key, tab), bins_mask(tab), do_hash(key, tab) & bins_mask(tab));
+    //return do_hash(key, tab) & bins_mask(tab);
+    return key & bins_mask(tab);
 }
 
 /* Return size of the allocated bins of table TAB.  */
@@ -556,8 +555,8 @@ st_table *
 st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
 {
     st_table *tab;
-    int n;
-
+    int n, i, j;
+    st_bucket *bucket;
 #ifdef HASH_LOG
 #if HASH_LOG+0 < 0
     {
@@ -577,14 +576,20 @@ st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
 //     tab->entry_power = n;
     tab->bin_power = features[n].bin_power;
     tab->table_new = NULL;
-    tab->num_expands = 0;
-    tab->num_expands_threshold = 2;
     tab->resize_lock = LOCK_FREE;
     // tab->size_ind = features[n].size_ind;
+    tab->num_expands = 0;
     tab->num_buckets = n < SMALL_TABLE_THRESHOLD ? size + 1 : get_bins_num(tab);
     tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, tab->num_buckets * sizeof(st_bucket));
+    tab->num_expands_threshold = 2 * tab->num_buckets;
 
-
+    memset(tab->bucket, 0, tab->num_buckets * (sizeof(st_bucket)));
+    // for (i = 0; i < tab->num_buckets; i++) {
+    //     bucket = tab->bucket + i;
+    //     for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+    //         bucket->key[j] = 0;
+    //     }
+    // }
 #ifdef ST_DEBUG
     st_check(tab);
 #endif
@@ -817,7 +822,7 @@ rebuild_table(st_table *tab, int is_increase, int by)
 static inline int
 is_small_table(st_table *tab)
 {
-    return tab->num_buckets <= SMALL_TABLE_THRESHOLD;
+    return tab->num_buckets < SMALL_TABLE_THRESHOLD;
 }
 
 /* Find an entry with KEY in table TAB.  Return non-zero if we found
@@ -887,52 +892,52 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
     st_lock_t *lock = &bucket->lock;
     st_data_t *empty = NULL;
     st_data_t *empty_v = NULL;
-    size_t j; 
+    size_t j, j1; 
     int resize = 0;
-
     while (!LOCK_ACQ(lock, tab)) {
-	bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
-	bucket = tab->bucket + bin;
-	lock = &bucket->lock;
+        bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+        bucket = tab->bucket + bin;
+        lock = &bucket->lock;
     }
 
+    printf("bin: %u key: %u, value:%u\n", bin, key, value);
     do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    st_data_t val = bucket->val[j];
-	    if (bucket->key[j] == key) {
-		if (LIKELY(bucket->val[j] == val)) {
-		    bucket->val[j] = key;
-		    LOCK_RLS(lock);
-		    return 1;
-	        }
-		else if (empty == NULL && bucket->key[j] == 0) {
-		    empty = &bucket->key[j];
-		    empty_v = &bucket->key[j];
-		}
-	    }
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            st_data_t val = bucket->val[j];
+            if (bucket->key[j] == key) {
+                if (LIKELY(bucket->val[j] == val)) {
+                    bucket->val[j] = value;
+                    LOCK_RLS(lock);
+                    return 1;
+                }
+            }
+            else if (empty == NULL && bucket->key[j] == 0) {
+                empty = &bucket->key[j];
+                empty_v = &bucket->val[j];
+            }
+        }
+             
+        if (LIKELY(bucket->next == NULL)) {
+            if (UNLIKELY(empty == NULL)) {
+                st_bucket *b = bucket_create_stats(tab, &resize);
+                b->val[0] = value;
+                b->key[0] = key;
+                bucket->next = b;
+            }
+            else {
+                *empty_v = value;
+                *empty = key;             
+            }
+            LOCK_RLS(lock);
 
-
-	    if (LIKELY(bucket->next == NULL)) {
-		if (UNLIKELY(empty == NULL)) {
-		    st_bucket *b = bucket_create_stats(tab, &resize);
-		    b->val[0] = val;
-		    b->key[0] = key;
-		    bucket->next = b;
-		}
-	    }
-	    else {
-		*empty_v = val;
-		*empty = key;
-	    }
-
-	    LOCK_RLS(lock);
-
-	    if (UNLIKELY(resize)) {
-		rebuild_table(tab, 1, 2);
-	    }
-	    return 1;
-	}
-	bucket = bucket->next;
+            if (UNLIKELY(resize)) {
+                printf("here2\n");
+                rebuild_table(tab, 1, 2);
+            }
+            return 0;
+        }
+        
+        bucket = bucket->next;
     } while(1);
 }
 
@@ -999,7 +1004,7 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
 	    if (UNLIKELY(resize)) {
 		rebuild_table(tab, 1, 2);
 	    }
-	    return 1;
+	    return 0;
 	}
 	bucket = bucket->next;
     } while (1);
@@ -1703,16 +1708,19 @@ void print_ht(st_table *tab, int dis_bucket) {
             tab->resize_lock);
         
     for (bin = 0; bin < tab->num_buckets; bin++) {
-        st_bucket *bucket = tab->bucket;
-
+        st_bucket *bucket = tab->bucket + bin;
+        printf("[bucket bin: %u] ==> ", bin);
         do {
+            
             for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-                if (dis_bucket && bucket->key[j] != 0) {
+                if (dis_bucket || bucket->key[j] != 0) {
                     counter++;
-                    printf("%u: { %u => %u}\n", counter, bucket->key[j], bucket->val[j]);
+                    printf("%u: { %u => %u} ", counter, bucket->key[j], bucket->val[j]);
                 }
             }
+            printf("\n");
             bucket = bucket->next;
+            
         } while (bucket != NULL);
     }
 
@@ -1721,10 +1729,12 @@ void print_ht(st_table *tab, int dis_bucket) {
 
 int main() {
     int i = 0;
-    for (i = 0; i < 100; i++) {
-        printf("index i:%d ", i);
-        st_table *tab = st_init_numtable_with_size(i);
-        print_ht(tab, 0);
+    st_table *tab = st_init_numtable_with_size(100);
+    // print_ht(tab, 1);
+    for (i = 0; i < 300; i++) {
+        printf("index i:%d \n", i);
+        st_insert(tab, i, i);
     }
+    print_ht(tab, 1);
     return 0;
 }
