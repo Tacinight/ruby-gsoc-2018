@@ -6,6 +6,7 @@
 #include <emmintrin.h>
 #include <xmmintrin.h>
 #include <malloc.h>
+#include <assert.h>
 #if defined(__cplusplus)
 extern "C" {
 #if 0
@@ -94,14 +95,14 @@ struct ALIGNED(CACHE_LINE_SIZE) st_table
 {
     union {
         struct {
-	    size_t version;
+            size_t version;
             st_index_t num_buckets;
-	    st_index_t num_entries;
-	    st_index_t num_expands;
-	    st_index_t num_expands_threshold;
-	    volatile uint8_t resize_lock;
+            st_index_t num_entries;
+            st_index_t num_expands;
+            st_index_t num_expands_threshold;
+            volatile uint8_t resize_lock;
             const struct st_hash_type *type;
-	    st_table *table_new;
+            st_table *table_new;
             st_bucket* bucket;
         };
         uint8_t padding[1 * CACHE_LINE_SIZE];

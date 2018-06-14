@@ -641,7 +641,6 @@ bucket_copy(volatile st_bucket *bucket, st_table *tab)
 int
 rebuild_table(st_table *tab, int is_increase, int by)
 {
-    print_ht(0, tab, 1);
     st_index_t num_buckets_new;
     st_table *new_tab;
     size_t b;
@@ -691,22 +690,22 @@ st_lookup(st_table *tab, st_data_t key, st_data_t *value)
 {
     st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
     volatile st_bucket *bucket = tab->bucket + bin;
-
     size_t j;
+
     do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    st_data_t val = bucket->val[j];
-	    if (bucket->key[j] == key) {
-		if (LIKELY(bucket->val[j] == val)) {
-		    *value = val;
-		    return 1;
-		}
-		else {
-		    return 0;
-		}
-	    }
-	}
-	bucket = bucket->next;
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            st_data_t val = bucket->val[j];
+            if (bucket->key[j] == key) {
+                if (LIKELY(bucket->val[j] == val)) {
+                    *value = val;
+                    return 1;
+                }
+                else {
+                    return 0;
+                }
+            }
+        }
+        bucket = bucket->next;
     } while (UNLIKELY(bucket != NULL));
 
     return 0;
@@ -875,6 +874,7 @@ st_copy(st_table *old_tab)
     size_t b;
 
     new_tab = (st_table *) memalign(CACHE_LINE_SIZE, sizeof(st_table));
+    new_tab->version = old_tab->version;
     new_tab->type = old_tab->type;
     new_tab->table_new = NULL;
     new_tab->resize_lock = LOCK_FREE;
@@ -1602,37 +1602,97 @@ void print_ht(int mark, st_table *tab, int dis_bucket) {
     return;
 }
 
-static st_data_t doublekey(st_data_t key) { return key * 2;}
+static st_data_t doublekey(st_data_t key) { 
+    if (key & 1)
+        return 0;
+    else
+        return key;}
 
 st_data_t main() {
-    st_data_t i = 0, b = 2;
-    st_data_t *p_i = &i;
+    st_data_t i = 0;
     st_data_t (*fun_p)(st_data_t) = &doublekey;
-    p_i = &b;
-    st_table *tab = st_init_numtable_with_size(100);
-    for (i = 1; i <= 300; i++) {
-        st_insert(tab, i, i);
-    }
-    st_table *cpy = st_copy(tab);
     st_data_t result = 1;
-    st_data_t key;
     st_data_t *p_result = &result;
-    for (i = 1; i <= 300; i++) {
+    st_data_t key;
+
+    printf("sizeof st_table: %d\n", sizeof(st_table));
+    printf("sizeof st_bucket: %d\n\n", sizeof(st_bucket));
+    /* Tests for creating table with various size
+     *
+     */
+    st_table *tab = st_init_numtable_with_size(100);
+    for (i = 1, result = 0; i <= 300; i++) {
+        st_insert(tab, i, i);
+        int ret = st_lookup(tab, i, p_result);
+        assert(ret);
+        assert(result == i);
+    }
+
+    /* Test for st_copy()
+     * the copy should have exact same but independent elements as origin one 
+     */ 
+    st_table *cpy = st_copy(tab);
+    assert(cpy->version == tab->version);
+    assert(cpy->num_buckets == tab->num_buckets);
+    assert(cpy->num_expands == tab->num_expands);
+    assert(cpy->num_expands_threshold == tab->num_expands_threshold);
+    assert(cpy->type == tab->type);
+    assert(cpy->resize_lock == LOCK_FREE);
+    assert(cpy->table_new == NULL);
+    assert(cpy->bucket != tab->bucket);
+    for (i = 1, result = 0; i <= 300; i++) {
+        st_insert(cpy, i, i);
+        int ret = st_lookup(cpy, i, p_result);
+        assert(ret);
+        assert(result == i);
+    }
+    
+
+    /* Test for copy, deletion and expansion operation.
+     *  
+     */ 
+    for (i = 1, result = 0; i <= 300; i++) {
         key = i;
-        st_delete(tab, &key, p_result);
+        int ret = st_delete(tab, &key, p_result);
+        assert(ret);
+        assert(result == i);
     }
     st_expand_table(cpy, 400);
     
+    /* Test for st_insert2()
+     * the func pointer return 0 if key is odd, return key if key is even
+     */ 
     for (i = 1; i <= 300; i++) {
         key = i;
         st_insert2(tab, key, i, fun_p);
     }
+    for (i = 1, result = 0; i <= 300; i++) {
+        int ret = st_lookup(tab, i, p_result);
+        if (i & 1) 
+            assert(!ret); 
+        else {
+            assert(ret);
+            assert(result == i);
+        }
+    }
+
+    /* Tests for rebuild_table()
+     *
+     */ 
     rebuild_table(tab, 1, 2);
     
+    /* Tests for auto resizeing operation, the table should resize if hit
+     * expansion threshold. The assert judge whether all value can be found 
+     * in the hash table.   
+     */
     st_table *resize_tab = st_init_numtable();
-    print_ht(1, resize_tab, 1);
-    for (i = 1; i <= 300; i++) {
+    for (i = 1; i <= 3000; i++) {
         st_insert(resize_tab, i, i);
+    }
+    for (i = 1, result = 0; i <= 3000; i++) {
+        int ret = st_lookup(resize_tab, i, p_result);
+        assert(ret);
+        assert(result == i);
     }
 
     
