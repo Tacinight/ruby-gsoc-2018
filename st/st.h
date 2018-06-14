@@ -94,7 +94,6 @@ struct ALIGNED(CACHE_LINE_SIZE) st_table
 {
     union {
         struct {
-            unsigned char bin_power;
 	    size_t version;
             st_index_t num_buckets;
 	    st_index_t num_entries;

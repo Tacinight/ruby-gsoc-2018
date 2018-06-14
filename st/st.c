@@ -21,7 +21,7 @@
 #define HALVE_RATIO 2
 #define SWAP_U64(a,b) swap_uint64(a,b)
 
-
+#define EXPANSION_RATIO 2
 #define TAS_RLS_MFENCE()
 #define HELP_RESIZE 0
 
@@ -192,128 +192,7 @@ static const struct st_hash_type type_strcasehash = {
 	rebuilt_p = _old_version != (tab)->version;	    \
     } while (FALSE)
 
-/* Features of a table.  */
-struct st_features {
-    /* Power of 2 used for number of allocated entries.  */
-    unsigned char entry_power;
-    /* Power of 2 used for number of allocated bins.  Depending on the
-       table size, the number of bins is 2-4 times more than the
-       number of entries.  */
-    unsigned char bin_power;
-    /* Enumeration of sizes of bins (8-bit, 16-bit etc).  */
-    unsigned char size_ind;
-    /* Bins are packed in words of type st_index_t.  The following is
-       a size of bins counted by words.  */
-    st_index_t bins_words;
-};
-
-/* Features of all possible size tables.  */
-#if SIZEOF_ST_INDEX_T == 8
 #define MAX_POWER2 62
-static const struct st_features features[] = {
-    {0, 1, 0, 0x0},
-    {1, 2, 0, 0x1},
-    {2, 3, 0, 0x1},
-    {3, 4, 0, 0x2},
-    {4, 5, 0, 0x4},
-    {5, 6, 0, 0x8},
-    {6, 7, 0, 0x10},
-    {7, 8, 0, 0x20},
-    {8, 9, 1, 0x80},
-    {9, 10, 1, 0x100},
-    {10, 11, 1, 0x200},
-    {11, 12, 1, 0x400},
-    {12, 13, 1, 0x800},
-    {13, 14, 1, 0x1000},
-    {14, 15, 1, 0x2000},
-    {15, 16, 1, 0x4000},
-    {16, 17, 2, 0x10000},
-    {17, 18, 2, 0x20000},
-    {18, 19, 2, 0x40000},
-    {19, 20, 2, 0x80000},
-    {20, 21, 2, 0x100000},
-    {21, 22, 2, 0x200000},
-    {22, 23, 2, 0x400000},
-    {23, 24, 2, 0x800000},
-    {24, 25, 2, 0x1000000},
-    {25, 26, 2, 0x2000000},
-    {26, 27, 2, 0x4000000},
-    {27, 28, 2, 0x8000000},
-    {28, 29, 2, 0x10000000},
-    {29, 30, 2, 0x20000000},
-    {30, 31, 2, 0x40000000},
-    {31, 32, 2, 0x80000000},
-    {32, 33, 3, 0x200000000},
-    {33, 34, 3, 0x400000000},
-    {34, 35, 3, 0x800000000},
-    {35, 36, 3, 0x1000000000},
-    {36, 37, 3, 0x2000000000},
-    {37, 38, 3, 0x4000000000},
-    {38, 39, 3, 0x8000000000},
-    {39, 40, 3, 0x10000000000},
-    {40, 41, 3, 0x20000000000},
-    {41, 42, 3, 0x40000000000},
-    {42, 43, 3, 0x80000000000},
-    {43, 44, 3, 0x100000000000},
-    {44, 45, 3, 0x200000000000},
-    {45, 46, 3, 0x400000000000},
-    {46, 47, 3, 0x800000000000},
-    {47, 48, 3, 0x1000000000000},
-    {48, 49, 3, 0x2000000000000},
-    {49, 50, 3, 0x4000000000000},
-    {50, 51, 3, 0x8000000000000},
-    {51, 52, 3, 0x10000000000000},
-    {52, 53, 3, 0x20000000000000},
-    {53, 54, 3, 0x40000000000000},
-    {54, 55, 3, 0x80000000000000},
-    {55, 56, 3, 0x100000000000000},
-    {56, 57, 3, 0x200000000000000},
-    {57, 58, 3, 0x400000000000000},
-    {58, 59, 3, 0x800000000000000},
-    {59, 60, 3, 0x1000000000000000},
-    {60, 61, 3, 0x2000000000000000},
-    {61, 62, 3, 0x4000000000000000},
-    {62, 63, 3, 0x8000000000000000},
-};
-
-#else
-#define MAX_POWER2 30
-
-static const struct st_features features[] = {
-    {0, 1, 0, 0x1},
-    {1, 2, 0, 0x1},
-    {2, 3, 0, 0x2},
-    {3, 4, 0, 0x4},
-    {4, 5, 0, 0x8},
-    {5, 6, 0, 0x10},
-    {6, 7, 0, 0x20},
-    {7, 8, 0, 0x40},
-    {8, 9, 1, 0x100},
-    {9, 10, 1, 0x200},
-    {10, 11, 1, 0x400},
-    {11, 12, 1, 0x800},
-    {12, 13, 1, 0x1000},
-    {13, 14, 1, 0x2000},
-    {14, 15, 1, 0x4000},
-    {15, 16, 1, 0x8000},
-    {16, 17, 2, 0x20000},
-    {17, 18, 2, 0x40000},
-    {18, 19, 2, 0x80000},
-    {19, 20, 2, 0x100000},
-    {20, 21, 2, 0x200000},
-    {21, 22, 2, 0x400000},
-    {22, 23, 2, 0x800000},
-    {23, 24, 2, 0x1000000},
-    {24, 25, 2, 0x2000000},
-    {25, 26, 2, 0x4000000},
-    {26, 27, 2, 0x8000000},
-    {27, 28, 2, 0x10000000},
-    {28, 29, 2, 0x20000000},
-    {29, 30, 2, 0x40000000},
-    {30, 31, 2, 0x80000000},
-};
-
-#endif
 
 /* The reserved hash value and its substitution.  */
 #define RESERVED_HASH_VAL (~(st_hash_t) 0)
@@ -405,33 +284,13 @@ set_bin(st_index_t *bins, int s, st_index_t n, st_index_t v)
 #define MARK_ENTRY_DELETED(e_ptr) ((e_ptr)->hash = RESERVED_HASH_VAL)
 #define DELETED_ENTRY_P(e_ptr) ((e_ptr)->hash == RESERVED_HASH_VAL)
 
-/* Return the number of allocated bins of table TAB.  */
-static inline st_index_t
-get_bins_num(const st_table *tab)
-{
-    return ((st_index_t) 1)<<(tab->bin_power - 1);
-}
-
-/* Return mask for a bin index in table TAB.  */
-static inline st_index_t
-bins_mask(const st_table *tab)
-{
-    return get_bins_num(tab) - 1;
-}
 
 /* Return the index of table TAB bin corresponding to
    HASH_VALUE.  */
 static inline st_index_t
 hash_bin(st_table *tab, st_data_t key)
 {
-    return /*do_hash(key, tab)*/ key & bins_mask(tab);
-}
-
-/* Return size of the allocated bins of table TAB.  */
-static inline st_index_t
-bins_size(const st_table *tab)
-{
-    return features[tab->bin_power].bins_words * sizeof (st_index_t);
+    return /*do_hash(key, tab)*/ key & tab->num_buckets - 1;
 }
 
 #ifdef ST_DEBUG
@@ -539,8 +398,8 @@ bucket_create_stats(st_table *tab, int *resize)
 {
     st_bucket *bucket = bucket_create();
     if (IAF_U32(&tab->num_expands) == tab->num_expands_threshold) {
-	/* printf("      -- hit threshold (%u ~ %u)\n", tab->num_expands, tab->num_expands_threshold); */
-	*resize = 1;
+	    printf("\n-- hit threshold (%u ~ %u)\n", tab->num_expands, tab->num_expands_threshold);
+	    *resize = 1;
     }
     return bucket;
 }
@@ -553,8 +412,8 @@ st_table *
 st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
 {
     st_table *tab;
-    int n;
     st_bucket *bucket;
+    st_data_t n, num_buckets;
 #ifdef HASH_LOG
 #if HASH_LOG+0 < 0
     {
@@ -571,17 +430,16 @@ st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
     n = get_power2(size);
     tab = (st_table *) memalign(CACHE_LINE_SIZE, sizeof(st_table));
     tab->type = type;
-//     tab->entry_power = n;
-    tab->bin_power = features[n].bin_power;
+    tab->version = 0;
     tab->table_new = NULL;
     tab->resize_lock = LOCK_FREE;
-    // tab->size_ind = features[n].size_ind;
     tab->num_expands = 0;
-    tab->num_buckets = n < SMALL_TABLE_THRESHOLD ? size + 1 : get_bins_num(tab);
-    tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, tab->num_buckets * sizeof(st_bucket));
-    tab->num_expands_threshold = 2 * tab->num_buckets;
+    num_buckets = n < SMALL_TABLE_THRESHOLD ? size + 1 : ((st_data_t)1 << n);
+    tab->num_buckets = num_buckets;
+    tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, num_buckets * sizeof(st_bucket));
+    tab->num_expands_threshold = EXPANSION_RATIO * num_buckets;
 
-    memset(tab->bucket, 0, tab->num_buckets * (sizeof(st_bucket)));
+    memset(tab->bucket, 0, num_buckets * (sizeof(st_bucket)));
 
 #ifdef ST_DEBUG
     st_check(tab);
@@ -783,6 +641,7 @@ bucket_copy(volatile st_bucket *bucket, st_table *tab)
 int
 rebuild_table(st_table *tab, int is_increase, int by)
 {
+    print_ht(0, tab, 1);
     st_index_t num_buckets_new;
     st_table *new_tab;
     size_t b;
@@ -791,25 +650,30 @@ rebuild_table(st_table *tab, int is_increase, int by)
 	return 0;
     
     if (is_increase) 
-	num_buckets_new = by * tab->num_buckets;
+	    num_buckets_new = by * tab->num_buckets;
     else
-	num_buckets_new = tab->num_buckets / HALVE_RATIO;
+	    num_buckets_new = tab->num_buckets / HALVE_RATIO;
 
-    new_tab = st_init_table_with_size(tab->type, num_buckets_new);
+    new_tab = (st_table *) memalign(CACHE_LINE_SIZE, sizeof(st_table));
+    new_tab->num_buckets = tab->num_buckets * by;
+    new_tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, new_tab->num_buckets * sizeof(st_bucket));
+    new_tab->num_expands_threshold = EXPANSION_RATIO * new_tab->num_buckets;
     new_tab->version = tab->version + 1;
 
+    memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
     for (b = 0; b < tab->num_buckets; b++) {
-	st_bucket * bu_cur = tab->bucket + b;
-	bucket_copy(bu_cur, new_tab);
+        st_bucket * bu_cur = tab->bucket + b;
+        bucket_copy(bu_cur, new_tab);
     }
 
-//     new_tab->table_prev = tab;
-    SWAP_U64(&tab, new_tab);
     tab->table_new = tab;
-//     free(new_tab);
+    tab->version = new_tab->version;
+    tab->num_expands = 0;
+    tab->num_buckets = new_tab->num_buckets;
+    tab->bucket = new_tab->bucket;
+    tab->num_expands_threshold = new_tab->num_expands_threshold;
+    free(new_tab);
     TRYLOCK_RLS(tab->resize_lock);
-
-    //gc_relase(tab);
     return 1;
 }
 
@@ -925,7 +789,6 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
             LOCK_RLS(lock);
 
             if (UNLIKELY(resize)) {
-                printf("here2\n");
                 rebuild_table(tab, 1, 2);
             }
             return 0;
@@ -961,46 +824,46 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
     
 
     while (!LOCK_ACQ(lock, tab)) {
-	bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
-	bucket = tab->bucket + bin;
-	lock = &bucket->lock;
+        bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+        bucket = tab->bucket + bin;
+        lock = &bucket->lock;
     }
 
     do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    st_data_t val = bucket->val[j];
-	    if (bucket->key[j] == key) {
-		if (bucket->val[j] == val) {
-		    bucket->val[j] = value;
-		    LOCK_RLS(lock);
-		    return 1;
-		}
-	    }
-	    else if (empty == NULL && bucket->key[j] == 0) {
-		empty = &bucket->key[j];
-		empty_v = &bucket->val[j];
-	    }
-	}
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            st_data_t val = bucket->val[j];
+            if (bucket->key[j] == key) {
+                if (bucket->val[j] == val) {
+                    bucket->val[j] = value;
+                    LOCK_RLS(lock);
+                    return 1;
+                }
+            }
+            else if (empty == NULL && bucket->key[j] == 0) {
+                empty = &bucket->key[j];
+                empty_v = &bucket->val[j];
+            }
+        }
 
-	if (LIKELY(bucket->next == NULL)) {
-	    if (UNLIKELY(empty == NULL)) {
-		st_bucket *b = bucket_create_stats(tab, &resize);
-		b->val[0] = value;
-		b->key[0] = (*func)(key);
-		bucket->next = b;
-	    }
-	    else {
-		*empty_v = value;
-		*empty = (*func)(key);
-	    }
+        if (LIKELY(bucket->next == NULL)) {
+            if (UNLIKELY(empty == NULL)) {
+                st_bucket *b = bucket_create_stats(tab, &resize);
+                b->val[0] = value;
+                b->key[0] = (*func)(key);
+                bucket->next = b;
+            }
+            else {
+                *empty_v = value;
+                *empty = (*func)(key);
+            }
 
-	    LOCK_RLS(lock);
-	    if (UNLIKELY(resize)) {
-		rebuild_table(tab, 1, 2);
-	    }
-	    return 0;
-	}
-	bucket = bucket->next;
+            LOCK_RLS(lock);
+            if (UNLIKELY(resize)) {
+                rebuild_table(tab, 1, 2);
+            }
+            return 0;
+        }
+	    bucket = bucket->next;
     } while (1);
 }
 
@@ -1013,14 +876,14 @@ st_copy(st_table *old_tab)
 
     new_tab = (st_table *) memalign(CACHE_LINE_SIZE, sizeof(st_table));
     new_tab->type = old_tab->type;
-    new_tab->bin_power = old_tab->bin_power;
     new_tab->table_new = NULL;
     new_tab->resize_lock = LOCK_FREE;
     new_tab->num_expands = 0;
     new_tab->num_buckets = old_tab->num_buckets;
     new_tab->bucket = (st_bucket*) memalign(CACHE_LINE_SIZE, old_tab->num_buckets * sizeof(st_bucket));
     new_tab->num_expands_threshold = old_tab->num_expands_threshold;
-    
+    memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
+
     for (b = 0; b < old_tab->num_buckets; b++) {
         st_bucket *bu_cur = old_tab->bucket + b;
         bucket_copy(bu_cur, new_tab);
@@ -1677,38 +1540,44 @@ strcasehash(st_data_t arg)
    Pre-existing entries remain not deleted inside of TAB, but its bins
    are cleared to expect future reconstruction. See rehash below. */
 static void
-st_expand_table(st_table **tab, st_index_t size)
+st_expand_table(st_table *tab, st_index_t size)
 {
     st_table *tmp;
     st_bucket *bu_cur;
-    st_table *old_tab = *tab;
+    st_table *old_tab = tab;
     st_index_t b;
 
-    if (size < old_tab->num_buckets * ENTRIES_PER_BUCKET)
+    if (size < tab->num_buckets * ENTRIES_PER_BUCKET)
         return; /* enough room already */
 
-    if (TRYLOCK_ACQ(&old_tab->resize_lock))
+    if (TRYLOCK_ACQ(&tab->resize_lock))
         return;
 
-    tmp = st_init_table_with_size(old_tab->type, size);
-    for (b = 0; b < old_tab->num_buckets; b++) {
-        bu_cur = old_tab->bucket + b;
+    tmp = st_init_table_with_size(tab->type, size);
+    tmp->version = tab->version + 1;
+    
+    for (b = 0; b < tab->num_buckets; b++) {
+        bu_cur = tab->bucket + b;
         bucket_copy(bu_cur, tmp);
     }
 
-    tmp->table_new = tmp;
-    *tab = tmp;
-    TRYLOCK_RLS(old_tab->resize_lock);
+    tab->table_new = tmp;
+    tab->version = tmp->version;
+    tab->num_buckets = tmp->num_buckets;
+    tab->num_expands = 0;
+    tab->bucket = tmp->bucket;
+    tab->num_expands_threshold = tmp->num_expands_threshold;
     free(old_tab);
+    TRYLOCK_RLS(tab->resize_lock);
 
     return;
 }
 
 void print_ht(int mark, st_table *tab, int dis_bucket) {
     int j, bin = 0, counter = 0;
-    printf("\nMARK: %d ", mark);
-    printf("bin_power: %u, num_bucket: %u, num_expands:%u, threshold: %u, lock: %u\n", 
-            tab->bin_power,
+    printf("\n[MARK: %d] ", mark);
+    printf("version: %u, num_bucket: %u, num_expands:%u, threshold: %u, lock: %u\n", 
+            tab->version,
             tab->num_buckets,
             tab->num_expands,
             tab->num_expands_threshold,
@@ -1733,33 +1602,39 @@ void print_ht(int mark, st_table *tab, int dis_bucket) {
     return;
 }
 
-int main() {
-    int i = 0, b = 2;
-    int *p_i = &i;
+static st_data_t doublekey(st_data_t key) { return key * 2;}
+
+st_data_t main() {
+    st_data_t i = 0, b = 2;
+    st_data_t *p_i = &i;
+    st_data_t (*fun_p)(st_data_t) = &doublekey;
     p_i = &b;
     st_table *tab = st_init_numtable_with_size(100);
-    // print_ht(tab, 1);
     for (i = 1; i <= 300; i++) {
-        //printf("index i:%d \n", i);
         st_insert(tab, i, i);
     }
-    //print_ht(tab, 1);
     st_table *cpy = st_copy(tab);
-
-    printf("\\\\\\\\\\\\\\\\\\\\\\\\delete\n");
     st_data_t result = 1;
     st_data_t key;
     st_data_t *p_result = &result;
     for (i = 1; i <= 300; i++) {
-        //printf("index i:%d \n", i);
         key = i;
         st_delete(tab, &key, p_result);
     }
-    //print_ht(tab, 1);
-    print_ht(1, cpy, 0);
-    printf("%u\n", cpy);
-    st_expand_table(&cpy, 400);
-    printf("%u\n", cpy);
-    print_ht(2, cpy, 0);
+    st_expand_table(cpy, 400);
+    
+    for (i = 1; i <= 300; i++) {
+        key = i;
+        st_insert2(tab, key, i, fun_p);
+    }
+    rebuild_table(tab, 1, 2);
+    
+    st_table *resize_tab = st_init_numtable();
+    print_ht(1, resize_tab, 1);
+    for (i = 1; i <= 300; i++) {
+        st_insert(resize_tab, i, i);
+    }
+
+    
     return 0;
 }
