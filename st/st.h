@@ -156,4 +156,4 @@ void rb_hash_bulk_insert(long, const VALUE *, VALUE);
 }  /* extern "C" { */
 #endif
 
-#define ATOMIC_CAS(var, oldval, newval) __sync_val_compare_and_swap(&(var), (oldval), (newval))
+#define ATOMIC_CAS(var, oldval, newval) __sync_val_compare_and_swap((var), (oldval), (newval))

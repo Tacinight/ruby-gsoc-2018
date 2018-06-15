@@ -54,23 +54,25 @@ lock_acq_chk_resize(st_lock_t *lock, st_table *tab)
 {
     char once = 1;
     st_lock_t l;
+
+    assert(*lock == LOCK_FREE);
     while ((l = ATOMIC_CAS(lock, LOCK_FREE, LOCK_UPDATE)) == LOCK_UPDATE){
-	if (once) {
-	    once = 0;
-	}
-	_mm_pause();
+        if (once) {
+            once = 0;
+        }
+        assert(l == LOCK_UPDATE);
+        _mm_pause();
     }
 
     if (l == LOCK_RESIZE) {
 #if HELP_RESIZE == 1
 	resize_help(tab)
 #endif
-	while (tab->table_new == NULL) {
-	    _mm_pause();
-	    _mm_mfence();
-	}
-
-	return 0;
+        while (tab->table_new == NULL) {
+            _mm_pause();
+            _mm_mfence();
+        }
+        return 0;
     }
     return 1;
 }
@@ -80,11 +82,11 @@ lock_acq_resize(st_lock_t *lock)
 {
     st_lock_t l;
     while ((l = ATOMIC_CAS(lock, LOCK_FREE, LOCK_UPDATE)) == LOCK_UPDATE) {
-	_mm_pause();
+	    _mm_pause();
     }
 
     if (l == LOCK_RESIZE) {
-	return 0;
+	    return 0;
     }
 
     return 1;
@@ -398,12 +400,17 @@ bucket_create_stats(st_table *tab, int *resize)
 {
     st_bucket *bucket = bucket_create();
     if (IAF_U32(&tab->num_expands) == tab->num_expands_threshold) {
-	    printf("\n-- hit threshold (%u ~ %u)\n", tab->num_expands, tab->num_expands_threshold);
+	    //printf("\n-- hit threshold (%u ~ %u)\n", tab->num_expands, tab->num_expands_threshold);
 	    *resize = 1;
     }
     return bucket;
 }
 
+static inline int
+is_small_table(st_table *tab)
+{
+    return tab->num_buckets < SMALL_TABLE_THRESHOLD;
+}
 
 /* Create and return table with TYPE which can hold at least SIZE
    entries.  The real number of entries which the table can hold is
@@ -581,6 +588,9 @@ count_collision(const struct st_hash_type *type)
 #error "REBUILD_THRESHOLD should be >= 2"
 #endif
 
+/* put object into hash table, this function wouldn't hit rebuilding 
+   so be sure that the hash table have enough capacity before invoke 
+   this function */
 static int
 st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
 {
@@ -588,37 +598,35 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
     size_t j;
 
     do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    if (bucket->key[j] == 0) {
-		bucket->val[j] = val;
-		bucket->key[j] = key;
-		tab->num_entries++;
-		return 1;
-	    }
-	}
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            if (bucket->key[j] == 0) {
+                bucket->val[j] = val;
+                bucket->key[j] = key;
+                tab->num_entries++;
+                return 1;
+            }
+        }
 
-	if (bucket->next == NULL) {
-	    int null;
-	    bucket->next = bucket_create_stats(tab, &null);
-	    bucket->next->val[0] = val;
-	    bucket->next->key[0] = key;
-	    tab->num_entries++;
-	    return 1;
-	}
-	
-	bucket = bucket->next;
+        if (bucket->next == NULL) {
+            int null;
+            bucket->next = bucket_create_stats(tab, &null);
+            bucket->next->val[0] = val;
+            bucket->next->key[0] = key;
+            tab->num_entries++;
+            return 1;
+        }
+        
+        bucket = bucket->next;
     } while (1);
 }
 
 static int 
-bucket_copy(volatile st_bucket *bucket, st_table *tab)
+bucket_copy(st_bucket *bucket, st_table *tab)
 {
     size_t j;
-
-    if (!LOCK_ACQ_RES(&bucket->lock))
-    {
+    st_lock_t *lock = &bucket->lock;
+    if (!LOCK_ACQ_RES(lock))
 	    return 0;
-    }
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
@@ -631,6 +639,7 @@ bucket_copy(volatile st_bucket *bucket, st_table *tab)
 	    bucket = bucket->next;
     } while (bucket != NULL);
 
+    LOCK_RLS(lock);
     return 1;
 }
 
@@ -646,8 +655,9 @@ rebuild_table(st_table *tab, int is_increase, int by)
     size_t b;
 
     if (TRYLOCK_ACQ(&tab->resize_lock))
-	return 0;
-    
+	    return 0;
+    assert(tab->resize_lock == 0xff);
+
     if (is_increase) 
 	    num_buckets_new = by * tab->num_buckets;
     else
@@ -673,22 +683,19 @@ rebuild_table(st_table *tab, int is_increase, int by)
     tab->num_expands_threshold = new_tab->num_expands_threshold;
     free(new_tab);
     TRYLOCK_RLS(tab->resize_lock);
+    assert(tab->resize_lock == LOCK_FREE);
     return 1;
 }
 
 
-static inline int
-is_small_table(st_table *tab)
-{
-    return tab->num_buckets < SMALL_TABLE_THRESHOLD;
-}
+
 
 /* Find an entry with KEY in table TAB.  Return non-zero if we found
    it.  Set up *RECORD to the found entry record.  */
 int
 st_lookup(st_table *tab, st_data_t key, st_data_t *value)
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+    st_index_t bin = hash_bin(tab, key);
     volatile st_bucket *bucket = tab->bucket + bin;
     size_t j;
 
@@ -716,24 +723,19 @@ st_lookup(st_table *tab, st_data_t key, st_data_t *value)
 int
 st_get_key(st_table *tab, st_data_t key, st_data_t *result)
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+    st_index_t bin = hash_bin(tab, key);
     volatile st_bucket *bucket = tab->bucket + bin;
 
     size_t j;
     do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    st_data_t val = bucket->val[j];
-	    if (bucket->key[j] == key) {
-		if (LIKELY(bucket->val[j] == val)) {
-		    *result = bucket->key[j];
-		    return 1;
-		}
-		else {
-		    return 0;
-		}
-	    }
-	}
-	bucket = bucket->next;
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            st_data_t val = bucket->val[j];
+            if (bucket->key[j] == key) {
+                *result = bucket->key[j];
+                return 1;
+            }
+        }
+        bucket = bucket->next;
     } while (UNLIKELY(bucket != NULL));
 
     return 0;
@@ -745,18 +747,20 @@ st_get_key(st_table *tab, st_data_t key, st_data_t *result)
 int
 st_insert(st_table *tab, st_data_t key, st_data_t value)
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
-    volatile st_bucket *bucket = tab->bucket + bin;
+    st_index_t bin = hash_bin(tab, key);
+    st_bucket *bucket = tab->bucket + bin;
     st_lock_t *lock = &bucket->lock;
     st_data_t *empty = NULL;
     st_data_t *empty_v = NULL;
     size_t j, j1; 
     int resize = 0;
+    
     while (!LOCK_ACQ(lock, tab)) {
-        bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+        bin = hash_bin(tab, key);
         bucket = tab->bucket + bin;
         lock = &bucket->lock;
     }
+    assert(*lock == LOCK_UPDATE);
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
@@ -769,8 +773,8 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
                 }
             }
             else if (empty == NULL && bucket->key[j] == 0) {
-                empty = &bucket->key[j];
                 empty_v = &bucket->val[j];
+                empty = &bucket->key[j];
             }
         }
              
@@ -780,12 +784,16 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
                 b->val[0] = value;
                 b->key[0] = key;
                 bucket->next = b;
+
             }
             else {
                 *empty_v = value;
                 *empty = key;             
             }
+
+            tab->num_entries++;
             LOCK_RLS(lock);
+            assert(*lock == LOCK_FREE);
 
             if (UNLIKELY(resize)) {
                 rebuild_table(tab, 1, 2);
@@ -795,6 +803,7 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
         
         bucket = bucket->next;
     } while(1);
+
 }
 
 /* Insert (KEY, VALUE) into table TAB.  The table should not have
@@ -802,7 +811,7 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
 void
 st_add_direct(st_table *tab, st_data_t key, st_data_t value)
 {
-    st_data_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+    st_data_t bin = hash_bin(tab, key);
     st_put_seq(tab, key, value, bin);
 }
 
@@ -813,8 +822,8 @@ int
 st_insert2(st_table *tab, st_data_t key, st_data_t value,
            st_data_t (*func)(st_data_t))
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
-    volatile st_bucket *bucket = tab->bucket + bin;
+    st_index_t bin = hash_bin(tab, key);
+    st_bucket *bucket = tab->bucket + bin;
     st_lock_t *lock = &bucket->lock;
     st_data_t* empty = NULL;
     st_data_t* empty_v = NULL;
@@ -823,11 +832,11 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
     
 
     while (!LOCK_ACQ(lock, tab)) {
-        bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+        bin = hash_bin(tab, key);
         bucket = tab->bucket + bin;
         lock = &bucket->lock;
     }
-
+    assert(*lock == LOCK_UPDATE);
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             st_data_t val = bucket->val[j];
@@ -850,13 +859,16 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
                 b->val[0] = value;
                 b->key[0] = (*func)(key);
                 bucket->next = b;
+
             }
             else {
                 *empty_v = value;
                 *empty = (*func)(key);
             }
 
+            tab->num_entries++;
             LOCK_RLS(lock);
+            assert(*lock == LOCK_FREE);
             if (UNLIKELY(resize)) {
                 rebuild_table(tab, 1, 2);
             }
@@ -900,17 +912,18 @@ st_copy(st_table *old_tab)
 static int
 st_general_delete(st_table *tab, st_data_t *key, st_data_t *value)
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, *key);
+    st_index_t bin = hash_bin(tab, *key);
     size_t j;
-    volatile st_bucket *bucket = tab->bucket + bin;
+    st_bucket *bucket = tab->bucket + bin;
     st_lock_t *lock = &bucket->lock;
 
+    assert(*lock == LOCK_FREE);
     while (!LOCK_ACQ(lock, tab)) {
-        bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+        bin = hash_bin(tab, *key);
         bucket = tab->bucket + bin;
         lock = &bucket->lock;
     }
-
+    assert(*lock == LOCK_UPDATE);
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             if (bucket->key[j] == *key) {
@@ -918,6 +931,7 @@ st_general_delete(st_table *tab, st_data_t *key, st_data_t *value)
                 if (value != 0) 
                     *value = bucket->val[j];
                 LOCK_RLS(lock);
+                assert(*lock == LOCK_FREE);
                 return 1;
             }
         }
@@ -926,6 +940,7 @@ st_general_delete(st_table *tab, st_data_t *key, st_data_t *value)
 
     if (value != 0) *value = 0;
     LOCK_RLS(lock);
+    assert(*lock == LOCK_FREE);
     return 0;
 }
 
@@ -954,33 +969,28 @@ st_delete_safe(st_table *tab, st_data_t *key, st_data_t *value,
 int
 st_shift(st_table *tab, st_data_t *key, st_data_t *value)
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, *key);
+    st_index_t bin;
     size_t j;
-    volatile st_bucket *bucket = tab->bucket + bin;
-    st_lock_t *lock = &bucket->lock;
+    st_bucket *bucket;
 
-    while (!LOCK_ACQ(lock, tab)) {
-	bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
-	bucket = tab->bucket + bin;
-	lock = &bucket->lock;
+    for (bin = 0; bin < tab->num_buckets; bin++) {
+        bucket = tab->bucket + bin;
+
+        do {
+            for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+                if (bucket->key[j] != 0) {
+                    if (value != 0) 
+                        *value = bucket->val[j];
+                    *key = bucket->key[j];
+                    bucket->key[j] = 0;
+                    return 1;
+                }
+            }
+            bucket = bucket->next;
+        } while (UNLIKELY(bucket != NULL));
     }
 
-
-    do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    if (bucket->key[j] != 0) {
-		if (value != 0) 
-		    *value = bucket->val[j];
-		*key = bucket->key[j];
-		bucket->key[j] = 0;
-		LOCK_RLS(lock);
-		return 1;
-	    }
-	}
-	bucket = bucket->next;
-    } while (UNLIKELY(bucket != NULL));
     if (value != 0) *value = 0;
-    LOCK_RLS(lock);
     return 0;
 }
 
@@ -1003,54 +1013,52 @@ int
 st_update(st_table *tab, st_data_t key,
 	  st_update_callback_func *func, st_data_t arg)
 {
-    st_index_t bin = is_small_table(tab) ? 0 : hash_bin(tab, key);
+    st_index_t bin = hash_bin(tab, key);
     st_data_t *cur_entry = NULL;
     st_data_t *cur_entry_v = NULL;
     st_data_t value = 0, old_key;
     int retval, existing = 0;
     size_t j;
-    volatile st_bucket *bucket = tab->bucket + bin;
+    st_bucket *bucket = tab->bucket + bin;
     st_lock_t *lock = &bucket->lock;
 
     do {
-	for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	    st_data_t val = bucket->val[j];
-	    if (bucket->key[j] == key) {
-		if (bucket->val[j] == val) {
-		    key = bucket->key[j];
-		    value = bucket->val[j];
-		    cur_entry = &bucket->key[j];
-		    cur_entry_v = &bucket->val[j];
-		    existing = 1;
-		    break;
-		}
-	    }
-	}
-	bucket = bucket->next;
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            st_data_t val = bucket->val[j];
+            if (bucket->key[j] == key) {
+                if (LIKELY(bucket->val[j] == val)) {
+                    key = bucket->key[j];
+                    value = bucket->val[j];
+                    cur_entry = &bucket->key[j];
+                    cur_entry_v = &bucket->val[j];
+                    existing = 1;
+                    break;
+                }
+            }
+        }
+        bucket = bucket->next;
     } while (bucket != NULL);
 
     old_key = key;
     retval = (*func)(&key, &value, arg, existing);
 
     switch (retval) {
-	case ST_CONTINUE:
-	    if (!existing) {
-		st_put_seq(tab, key, value, bin);
-		break;
-	    }
-	    if (old_key != key) {
-		*cur_entry = key;
-	    }
-	    *cur_entry_v = value;
-	    break;
-	case ST_DELETE: 
-	    if (existing) {
-		*cur_entry = 0;
-		*cur_entry_v = 0;
-		tab->num_entries--;
-	    }
-	    break;
-
+        case ST_CONTINUE:
+            if (!existing) {
+                st_put_seq(tab, key, value, bin);
+                break;
+            }
+            if (old_key != key) {
+                *cur_entry = key;
+            }
+            *cur_entry_v = value;
+            break;
+        case ST_DELETE: 
+            if (existing) {
+                *cur_entry = 0;
+                tab->num_entries--;
+            }
+            break;
     }
     return existing;
 }
@@ -1077,7 +1085,7 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
     	bucket = tab->bucket;
 	    lock = &bucket->lock;
     }
-
+    assert(*lock == LOCK_UPDATE);
     for (bin = 0; bin < tab->num_buckets; bin++) {
 	    bucket = tab->bucket + bin;
 
@@ -1116,6 +1124,8 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
 	    bucket = bucket->next;
 	} while (bucket->next != NULL);
     }
+    LOCK_RLS(lock);
+    assert(*lock == LOCK_FREE);
     return 1;
 }
 
@@ -1552,6 +1562,7 @@ st_expand_table(st_table *tab, st_index_t size)
 
     if (TRYLOCK_ACQ(&tab->resize_lock))
         return;
+    assert(tab->resize_lock == 0xff);
 
     tmp = st_init_table_with_size(tab->type, size);
     tmp->version = tab->version + 1;
@@ -1569,10 +1580,11 @@ st_expand_table(st_table *tab, st_index_t size)
     tab->num_expands_threshold = tmp->num_expands_threshold;
     free(old_tab);
     TRYLOCK_RLS(tab->resize_lock);
+    assert(tab->resize_lock == LOCK_FREE);
 
     return;
 }
-
+ 
 void print_ht(int mark, st_table *tab, int dis_bucket) {
     int j, bin = 0, counter = 0;
     printf("\n[MARK: %d] ", mark);
@@ -1587,18 +1599,17 @@ void print_ht(int mark, st_table *tab, int dis_bucket) {
         st_bucket *bucket = tab->bucket + bin;
         if (dis_bucket) printf("\n\n[bucket bin: %u] ==> ", bin);
         do {
-            
             for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
                 if (dis_bucket) {
                     counter++;
-                    printf(" %u: { %u => %u} ", counter, bucket->key[j], bucket->val[j]);
+                    printf(" %u: {lock: %u, %u => %u} ", counter, bucket->lock, bucket->key[j], bucket->val[j]);
                 }
             }
             bucket = bucket->next;
-            
         } while (bucket != NULL);
     }
 
+    printf("\n-------------------------------\n");
     return;
 }
 
@@ -1606,27 +1617,43 @@ static st_data_t doublekey(st_data_t key) {
     if (key & 1)
         return 0;
     else
-        return key;}
+        return key;
+}
+
+static int 
+doublevalue(st_data_t *key, st_data_t *value, st_data_t arg, int existing) {
+    if ((*key) & 1) return ST_DELETE;
+    else
+        *value = 2 * (*value);
+    return ST_CONTINUE;
+}
 
 st_data_t main() {
-    st_data_t i = 0;
+    st_data_t i = 0, ii;
     st_data_t (*fun_p)(st_data_t) = &doublekey;
+    int (*fun_pp)(st_data_t*, st_data_t*, st_data_t, int) = &doublevalue;
     st_data_t result = 1;
     st_data_t *p_result = &result;
     st_data_t key;
 
     printf("sizeof st_table: %d\n", sizeof(st_table));
     printf("sizeof st_bucket: %d\n\n", sizeof(st_bucket));
+
+
     /* Tests for creating table with various size
      *
      */
-    st_table *tab = st_init_numtable_with_size(100);
-    for (i = 1, result = 0; i <= 300; i++) {
+    st_table *tab = st_init_numtable_with_size(100);   
+    for (i = 1; i <= 300; i++) {
         st_insert(tab, i, i);
+        assert(tab->num_entries == i);
+    }
+    for (i = 1, result = 0; i <= 300; i++) {
         int ret = st_lookup(tab, i, p_result);
         assert(ret);
         assert(result == i);
     }
+
 
     /* Test for st_copy()
      * the copy should have exact same but independent elements as origin one 
@@ -1641,12 +1668,11 @@ st_data_t main() {
     assert(cpy->table_new == NULL);
     assert(cpy->bucket != tab->bucket);
     for (i = 1, result = 0; i <= 300; i++) {
-        st_insert(cpy, i, i);
         int ret = st_lookup(cpy, i, p_result);
         assert(ret);
         assert(result == i);
     }
-    
+
 
     /* Test for copy, deletion and expansion operation.
      *  
@@ -1658,7 +1684,7 @@ st_data_t main() {
         assert(result == i);
     }
     st_expand_table(cpy, 400);
-    
+
     /* Test for st_insert2()
      * the func pointer return 0 if key is odd, return key if key is even
      */ 
@@ -1679,22 +1705,86 @@ st_data_t main() {
     /* Tests for rebuild_table()
      *
      */ 
+    int t_num_buckets = tab->num_buckets;
     rebuild_table(tab, 1, 2);
-    
+    assert(t_num_buckets < tab->num_buckets);
+
+
     /* Tests for auto resizeing operation, the table should resize if hit
      * expansion threshold. The assert judge whether all value can be found 
      * in the hash table.   
      */
-    st_table *resize_tab = st_init_numtable();
-    for (i = 1; i <= 3000; i++) {
+    st_table *resize_tab;
+    for (ii = 1; ii < 3000; ii++) {
+        resize_tab = st_init_numtable();
+        for (i = 1; i <= ii; i++) {
+            st_insert(resize_tab, i, i);
+        }
+        for (i = 1, result = 0; i <= ii; i++) {
+            int ret = st_lookup(resize_tab, i, p_result);
+            assert(ret);
+            assert(result == i);
+        }
+        free(resize_tab);
+    }
+
+    /* Tests for st_shift() */
+    st_table *empty = st_init_numtable();
+    st_data_t ret_k = 0, ret_v = 1;
+    int ret = st_shift(empty, &ret_k, &ret_v);
+    assert(!ret);
+    assert(ret_v == 0);
+
+    ret_k = ret_v = 0;
+    assert(ret_k == 0);
+    assert(ret_v == 0);
+    for (i = 1; i < 15; i++) {
+        st_insert(empty, i, i);
+    }
+    for (i = 1; i < 15; i++) {
+        ret = st_shift(empty, &ret_k, &ret_v);
+        assert(ret != 0);
+        assert(ret_k != 0);
+        assert(ret_v != 0);
+    }
+
+    ret_k = ret_v = 0;
+    assert(ret_k == 0);
+    assert(ret_v == 0);
+    resize_tab = st_init_numtable();
+    for (i = 1; i <= 100; i++) {
         st_insert(resize_tab, i, i);
     }
-    for (i = 1, result = 0; i <= 3000; i++) {
-        int ret = st_lookup(resize_tab, i, p_result);
+    for (i = 1; i <= 100; i++) {
+        ret = st_shift(resize_tab, &ret_k, &ret_v);
+        assert(ret != 0);
+        assert(ret_k != 0);
+        assert(ret_v != 0);
+    }
+    ret = st_shift(resize_tab, &ret_k, &ret_v);
+    assert(ret == 0);
+    free(resize_tab);
+
+    /* Tests for st_get_key() */
+    resize_tab = st_init_numtable();
+    for (i = 1; i <= 100; i++) {
+        st_insert(resize_tab, i, i);
+    }
+    for (i = 1, result = 0, ret = 0; i <= 100; i++) {
+        ret = st_get_key(resize_tab, i, p_result);
         assert(ret);
         assert(result == i);
     }
 
-    
+    /* Tests for st_update() */
+    st_table *update_tab = st_init_numtable();
+    for (i = 1; i < 100; i++) {
+        st_insert(update_tab, i, i);
+    }
+    for (i = 1; i < 100; i++) {
+        ret = st_update(update_tab, i, fun_pp, 1);
+        assert(ret);
+    }
+
     return 0;
 }
