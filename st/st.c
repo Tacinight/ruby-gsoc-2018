@@ -181,8 +181,8 @@ static const struct st_hash_type type_strcasehash = {
 #define ST_INIT_VAL_BYTE 0xafa
 
 #define EQUAL(tab,x,y) ((x) == (y) || (*(tab)->type->compare)((x),(y)) == 0)
-#define PTR_EQUAL(tab, hash, hash_, key, key_) \
-    (hash == hash_) && EQUAL((tab), (key), (key_))
+#define PTR_EQUAL(tab, entry, hash_, key_) \
+    (entry.hash == hash_) && EQUAL((tab), (entry.key), (key_))
     
 /* As PRT_EQUAL only its result is returned in RES.  REBUILT_P is set
    up to TRUE if the table is rebuilt during the comparison.  */
@@ -239,34 +239,25 @@ get_power2(st_index_t size)
     return -1;
 }
 
-/* Return value of N-th bin in array BINS of table with bins size
-   index S.  */
-static inline st_index_t
-get_bin(st_index_t *bins, int s, st_index_t n)
-{
-    return (s == 0 ? ((unsigned char *) bins)[n]
-	    : s == 1 ? ((unsigned short *) bins)[n]
-	    : s == 2 ? ((unsigned int *) bins)[n]
-	    : ((st_index_t *) bins)[n]);
-}
-
-/* Set up N-th bin in array BINS of table with bins size index S to
-   value V.  */
 static inline void
-set_bin(st_index_t *bins, int s, st_index_t n, st_index_t v)
+clear_entry(st_entry* entry)
 {
-    if (s == 0) ((unsigned char *) bins)[n] = (unsigned char) v;
-    else if (s == 1) ((unsigned short *) bins)[n] = (unsigned short) v;
-    else if (s == 2) ((unsigned int *) bins)[n] = (unsigned int) v;
-    else ((st_index_t *) bins)[n] = v;
+    entry->hash = 0;
+    entry->key = 0;
 }
 
 static inline void
-set_bucket(volatile st_bucket* bucket, int index, st_hash_t hash, st_data_t key, st_data_t val)
+set_entry(st_entry* entry, st_hash_t hash, st_data_t key, st_data_t val)
 {
-    bucket->hash[index] = hash;
-    bucket->val[index] = val;
-    bucket->key[index] = key;
+    entry->hash = hash;
+    entry->record = val;
+    entry->key = key;
+}
+
+static inline int
+entry_empty(st_entry* entry)
+{
+    return entry->key == 0 && entry->hash == 0;
 }
 
 /* These macros define reserved values for empty table bin and table
@@ -391,12 +382,12 @@ bucket_create()
 
     bucket = (st_bucket*) memalign(CACHE_LINE_SIZE, sizeof(st_bucket));
     if (bucket == NULL) 
-	return NULL;
+	    return NULL;
 
     bucket->lock = 0;
     
     for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-	bucket->key[j] = 0;
+	    clear_entry(&bucket->entry[j]);
     }
     bucket->next = NULL;
     return bucket;
@@ -601,14 +592,14 @@ count_collision(const struct st_hash_type *type)
 static int
 st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
 {
-    volatile st_bucket *bucket = tab->bucket + bin;
+    st_bucket *bucket = tab->bucket + bin;
     st_hash_t hash_value = do_hash(key, tab);
     size_t j;
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            if (bucket->key[j] == 0) {
-                set_bucket(bucket, j, hash_value, key, val);
+            if (entry_empty(&bucket->entry[j])) {
+                set_entry(&bucket->entry[j], hash_value, key, val);
                 tab->num_entries++;
                 return 1;
             }
@@ -616,8 +607,9 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
 
         if (bucket->next == NULL) {
             int null;
-            bucket->next = bucket_create_stats(tab, &null);
-            set_bucket(bucket->next, 0, hash_value, key, val);
+            st_bucket *b = bucket_create_stats(tab, &null);
+            set_entry(&b->entry[0], hash_value, key, val);
+            bucket->next = b;
             tab->num_entries++;
             return 1;
         }
@@ -636,10 +628,10 @@ bucket_copy(st_bucket *bucket, st_table *tab)
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            st_data_t key = bucket->key[j];
+            st_data_t key = bucket->entry[j].key;
             if (key != 0) {
                 st_index_t bin = hash_bin(tab, key);
-                st_put_seq(tab, key, bucket->val[j], bin);
+                st_put_seq(tab, key, bucket->entry[j].record, bin);
             }
         }
 	    bucket = bucket->next;
@@ -706,9 +698,9 @@ st_lookup(st_table *tab, st_data_t key, st_data_t *value)
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            st_data_t val = bucket->val[j];
-            if (PTR_EQUAL(tab, bucket->hash[j], hash_value, bucket->key[j], key)) {
-                if (LIKELY(bucket->val[j] == val)) {
+            st_data_t val = bucket->entry[j].record;
+            if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
+                if (LIKELY(bucket->entry[j].record == val)) {
                     *value = val;
                     return 1;
                 }
@@ -735,9 +727,9 @@ st_get_key(st_table *tab, st_data_t key, st_data_t *result)
     size_t j;
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            st_data_t val = bucket->val[j];
-            if (PTR_EQUAL(tab, bucket->hash[j], hash_value, bucket->key[j], key)) {
-                *result = bucket->key[j];
+            st_data_t val = bucket->entry[j].record;
+            if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
+                *result = bucket->entry[j].key;
                 return 1;
             }
         }
@@ -757,7 +749,7 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
     st_bucket *bucket = tab->bucket + bin;
     st_hash_t hash_value = do_hash(key, tab);
     st_lock_t *lock = &bucket->lock;
-    st_data_t *empty = NULL, *empty_v = NULL, *empty_h = NULL;
+    st_entry *empty = NULL;
     size_t j, j1; 
     int resize = 0;
     
@@ -770,32 +762,28 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            st_data_t val = bucket->val[j];
-            if (PTR_EQUAL(tab, bucket->hash[j], hash_value, bucket->key[j], key)) {
-                if (LIKELY(bucket->val[j] == val)) {
-                    bucket->val[j] = value;
+            st_data_t val = bucket->entry[j].record;
+            if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
+                if (LIKELY(bucket->entry[j].record == val)) {
+                    bucket->entry[j].record = value;
                     LOCK_RLS(lock);
                     return 1;
                 }
             }
-            else if (empty == NULL && bucket->key[j] == 0) {
-                empty_h = &bucket->hash[j];
-                empty_v = &bucket->val[j];
-                empty = &bucket->key[j];
+            else if (empty == NULL && entry_empty(&bucket->entry[j])) {
+                empty = &bucket->entry[j];
             }
         }
              
         if (LIKELY(bucket->next == NULL)) {
             if (UNLIKELY(empty == NULL)) {
                 st_bucket *b = bucket_create_stats(tab, &resize);
-                set_bucket(b, 0, hash_value, key, value);
+                set_entry(&b->entry[0], hash_value, key, value);
                 bucket->next = b;
 
             }
             else {
-                *empty_h = hash_value;
-                *empty_v = value;
-                *empty = key;
+                set_entry(empty, hash_value, key, value);
             }
 
             tab->num_entries++;
@@ -833,7 +821,7 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
     st_bucket *bucket = tab->bucket + bin;
     st_lock_t *lock = &bucket->lock;
     st_hash_t hash_value = do_hash(key, tab);
-    st_data_t *empty = NULL, *empty_v = NULL, *empty_h = NULL;
+    st_entry *empty = NULL;
     size_t j; 
     int resize = 0;
     
@@ -846,32 +834,28 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
     assert(*lock == LOCK_UPDATE);
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            st_data_t val = bucket->val[j];
-            if (PTR_EQUAL(tab, bucket->hash[j], hash_value, bucket->key[j], key)) {
-                if (bucket->val[j] == val) {
-                    bucket->val[j] = value;
+            st_data_t val = bucket->entry[j].record;
+            if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
+                if (bucket->entry[j].record == val) {
+                    bucket->entry[j].record = value;
                     LOCK_RLS(lock);
                     return 1;
                 }
             }
-            else if (empty == NULL && bucket->key[j] == 0) {
-                empty_h = &bucket->hash[j];
-                empty_v = &bucket->val[j];
-                empty = &bucket->key[j];
+            else if (empty == NULL && entry_empty(&bucket->entry[j])) {
+                empty = &bucket->entry[j];
             }
         }
 
         if (LIKELY(bucket->next == NULL)) {
             if (UNLIKELY(empty == NULL)) {
                 st_bucket *b = bucket_create_stats(tab, &resize);
-                set_bucket(b, 0, hash_value, (*func)(key), value);
+                set_entry(&b->entry[0], hash_value, (*func)(key), value);
                 bucket->next = b;
 
             }
             else {
-                *empty_h = hash_value;
-                *empty_v = value;
-                *empty = (*func)(key);
+                set_entry(empty, hash_value, (*func)(key), value);
             }
 
             tab->num_entries++;
@@ -935,11 +919,10 @@ st_general_delete(st_table *tab, st_data_t *key, st_data_t *value)
     assert(*lock == LOCK_UPDATE);
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            if (PTR_EQUAL(tab, bucket->hash[j], hash_value, bucket->key[j], *key)) {
-                bucket->key[j] = 0;
-                bucket->hash[j] = 0;
+            if (PTR_EQUAL(tab, bucket->entry[j], hash_value, *key)) {
+                clear_entry(&bucket->entry[j]);
                 if (value != 0) 
-                    *value = bucket->val[j];
+                    *value = bucket->entry[j].record;
                 LOCK_RLS(lock);
                 assert(*lock == LOCK_FREE);
                 return 1;
@@ -988,12 +971,11 @@ st_shift(st_table *tab, st_data_t *key, st_data_t *value)
 
         do {
             for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-                if (bucket->key[j] != 0) {
+                if (!entry_empty(&bucket->entry[j])) {
                     if (value != 0) 
-                        *value = bucket->val[j];
-                    *key = bucket->key[j];
-                    bucket->key[j] = 0;
-                    bucket->hash[j] = 0;
+                        *value = bucket->entry[j].record;
+                    *key = bucket->entry[j].key;
+                    clear_entry(&bucket->entry[j]);
                     return 1;
                 }
             }
@@ -1025,7 +1007,7 @@ st_update(st_table *tab, st_data_t key,
 	  st_update_callback_func *func, st_data_t arg)
 {
     st_index_t bin = hash_bin(tab, key);
-    st_data_t *cur_entry = NULL, *cur_entry_v = NULL, *cur_entry_h = NULL;
+    st_entry *cur_entry = NULL;
     st_data_t value = 0, old_key;
     int retval, existing = 0;
     size_t j;
@@ -1035,14 +1017,12 @@ st_update(st_table *tab, st_data_t key,
 
     do {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            st_data_t val = bucket->val[j];
-            if (PTR_EQUAL(tab, bucket->hash[j], hash_value, bucket->key[j], key)) {
-                if (LIKELY(bucket->val[j] == val)) {
-                    key = bucket->key[j];
-                    value = bucket->val[j];
-                    cur_entry = &bucket->key[j];
-                    cur_entry_v = &bucket->val[j];
-                    cur_entry_h = &bucket->hash[j];
+            st_data_t val = bucket->entry[j].record;
+            if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
+                if (LIKELY(bucket->entry[j].record == val)) {
+                    key = bucket->entry[j].key;
+                    value = bucket->entry[j].record;
+                    cur_entry = &bucket->entry[j];
                     existing = 1;
                     break;
                 }
@@ -1061,14 +1041,13 @@ st_update(st_table *tab, st_data_t key,
                 break;
             }
             if (old_key != key) {
-                *cur_entry = key;
+                cur_entry->key = key;
             }
-            *cur_entry_v = value;
+            cur_entry->record = value;
             break;
         case ST_DELETE: 
             if (existing) {
-                *cur_entry_h = 0;
-                *cur_entry = 0;
+                clear_entry(cur_entry);
                 tab->num_entries--;
             }
             break;
@@ -1098,8 +1077,8 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
 
         do {
             for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-                if (bucket->key[j] != 0) {
-                    retval = (*func)(bucket->key[j], bucket->val[j], arg, 0);
+                if (!entry_empty(&bucket->entry[j])) {
+                    retval = (*func)(bucket->entry[j].key, bucket->entry[j].record, arg, 0);
                 }
 
                 if (version != tab->version) {
@@ -1117,12 +1096,11 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
                     case ST_STOP:
                         return 0;
                     case ST_DELETE: {
-                        key = bucket->key[j];
+                        key = bucket->entry[j].key;
 
                         for (j1 = 0; j1 < ENTRIES_PER_BUCKET; j1++) {
-                            if (bucket->key[j1] == key) {
-                                bucket->hash[j1] = 0;
-                                bucket->key[j1] = 0;
+                            if (bucket->entry[j1].key == key) {
+                                clear_entry(&bucket->entry[j1]);
                                 break;
                             }
                         }
@@ -1168,8 +1146,8 @@ st_general_keys(st_table *tab, st_data_t *keys, st_index_t size)
 
         do {
             for (i = 0; i < ENTRIES_PER_BUCKET; i++) {
-                if (bucket->key[i] != 0) {
-                    *keys++ = bucket->key[i];
+                if (!entry_empty(&bucket->entry[i])) {
+                    *keys++ = bucket->entry[i].key;
                 }
             }
             bucket = bucket->next;
@@ -1211,8 +1189,8 @@ st_general_values(st_table *tab, st_data_t *values, st_index_t size)
 
         do {
             for (i = 0; i < ENTRIES_PER_BUCKET; i++) {
-                if (bucket->key[i] != 0) {
-                    *values++ = bucket->val[i];
+                if (!entry_empty(&bucket->entry[i])) {
+                    *values++ = bucket->entry[i].record;
                 }
             }
             bucket = bucket->next;
@@ -1610,7 +1588,8 @@ void print_ht(int mark, st_table *tab, int dis_bucket) {
             for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
                 if (dis_bucket) {
                     counter++;
-                    printf(" #%u: {hash: %x, %u => %u} ", counter, bucket->hash[j], bucket->key[j], bucket->val[j]);
+                    st_entry *entry = &bucket->entry[j];
+                    printf(" #%u: {hash: %x, %u => %u} ", counter, entry->hash, entry->key, entry->record);
                 }
             }
             bucket = bucket->next;

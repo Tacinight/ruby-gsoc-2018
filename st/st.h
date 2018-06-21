@@ -84,12 +84,17 @@ struct st_hash_type {
 typedef st_data_t st_lock_t;
 typedef st_data_t st_hash_t;
 
+typedef struct st_entry
+{
+    st_data_t hash;
+    st_data_t key;
+    st_data_t record;
+} st_entry;
+
 struct ALIGNED(CACHE_LINE_SIZE) st_bucket
 {
     st_lock_t lock;
-    st_data_t hash[ENTRIES_PER_BUCKET];
-    st_data_t key[ENTRIES_PER_BUCKET];
-    st_data_t val[ENTRIES_PER_BUCKET];
+    st_entry entry[ENTRIES_PER_BUCKET];
     struct st_bucket* next;
 };
 
