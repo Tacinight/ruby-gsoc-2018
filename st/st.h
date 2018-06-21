@@ -72,7 +72,7 @@ struct st_hash_type {
 #endif
 
 #define CACHE_LINE_SIZE 64
-#define ENTRIES_PER_BUCKET 3
+#define ENTRIES_PER_BUCKET 2
 
 #ifndef ALIGNED
 #  if __GNUC__ && !SCC
@@ -82,10 +82,12 @@ struct st_hash_type {
 #  endif
 #endif
 typedef st_data_t st_lock_t;
+typedef st_data_t st_hash_t;
 
 struct ALIGNED(CACHE_LINE_SIZE) st_bucket
 {
     st_lock_t lock;
+    st_data_t hash[ENTRIES_PER_BUCKET];
     st_data_t key[ENTRIES_PER_BUCKET];
     st_data_t val[ENTRIES_PER_BUCKET];
     struct st_bucket* next;
