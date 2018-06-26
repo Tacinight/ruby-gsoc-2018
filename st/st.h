@@ -107,9 +107,11 @@ struct ALIGNED(CACHE_LINE_SIZE) st_table
             st_index_t num_entries;
             st_index_t num_expands;
             st_index_t num_expands_threshold;
+            st_index_t entry_bound;
             volatile uint8_t resize_lock;
             const struct st_hash_type *type;
             st_table *table_new;
+            st_index_t *ordered_entry;
             st_bucket* bucket;
         };
         uint8_t padding[1 * CACHE_LINE_SIZE];

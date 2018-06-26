@@ -203,11 +203,7 @@ static const struct st_hash_type type_strcasehash = {
 static inline st_hash_t
 do_hash(st_data_t key, st_table *tab)
 {
-    st_hash_t hash = (st_hash_t)(tab->type->hash)(key);
-
-    /* RESERVED_HASH_VAL is used for a deleted entry.  Map it into
-       another value.  Such mapping should be extremely rare.  */
-    return hash == RESERVED_HASH_VAL ? RESERVED_HASH_SUBSTITUTION_VAL : hash;
+    return (st_hash_t)(tab->type->hash)(key);
 }
 
 /* Power of 2 defining the minimal number of allocated entries.  */
@@ -257,7 +253,7 @@ set_entry(st_entry* entry, st_hash_t hash, st_data_t key, st_data_t val)
 static inline int
 entry_empty(st_entry* entry)
 {
-    return entry->key == 0 && entry->hash == 0;
+    return entry == NULL || (entry->key == 0 && entry->hash == 0);
 }
 
 /* These macros define reserved values for empty table bin and table
@@ -439,11 +435,15 @@ st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
     tab->resize_lock = LOCK_FREE;
     tab->num_expands = 0;
     tab->num_entries = 0;
+    tab->entry_bound = 0;
     num_buckets = n < SMALL_TABLE_THRESHOLD ? size + 1 : ((st_data_t)1 << n);
     tab->num_buckets = num_buckets;
     tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, num_buckets * sizeof(st_bucket));
+    tab->ordered_entry = (st_index_t *) memalign(CACHE_LINE_SIZE,
+                                               num_buckets * 6 * sizeof(st_data_t));
     tab->num_expands_threshold = EXPANSION_RATIO * num_buckets;
 
+    memset(tab->ordered_entry, 0, num_buckets * 6 * sizeof(st_data_t));
     memset(tab->bucket, 0, num_buckets * (sizeof(st_bucket)));
 
 #ifdef ST_DEBUG
@@ -600,6 +600,7 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             if (entry_empty(&bucket->entry[j])) {
                 set_entry(&bucket->entry[j], hash_value, key, val);
+                tab->ordered_entry[tab->entry_bound++] = (st_index_t)&bucket->entry[j];
                 tab->num_entries++;
                 return 1;
             }
@@ -609,6 +610,7 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
             int null;
             st_bucket *b = bucket_create_stats(tab, &null);
             set_entry(&b->entry[0], hash_value, key, val);
+            tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
             bucket->next = b;
             tab->num_entries++;
             return 1;
@@ -641,6 +643,17 @@ bucket_copy(st_bucket *bucket, st_table *tab)
     return 1;
 }
 
+static int
+bucket_copy_ordered(st_table *new_tab, st_table *old_tab)
+{
+    size_t j;
+    for (j = 0; j < old_tab->entry_bound; j++) {
+        if (entry_empty((st_entry*)old_tab->ordered_entry[j])) continue;
+        st_entry *cur_entry = (st_entry*)old_tab->ordered_entry[j];
+        st_index_t bin = hash_bin(new_tab, cur_entry->key);
+        st_put_seq(new_tab, cur_entry->key, cur_entry->record, bin);
+    }
+}
 /* Rebuild table TAB.  Rebuilding removes all deleted bins and entries
    and can change size of the table entries and bins arrays.
    Rebuilding is implemented by creation of a new table or by
@@ -664,21 +677,29 @@ rebuild_table(st_table *tab, int is_increase, int by)
     new_tab = (st_table *) memalign(CACHE_LINE_SIZE, sizeof(st_table));
     new_tab->type = tab->type;
     new_tab->num_buckets = tab->num_buckets * by;
+    new_tab->entry_bound = 0;
     new_tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, new_tab->num_buckets * sizeof(st_bucket));
+    new_tab->ordered_entry = (st_index_t *) memalign(CACHE_LINE_SIZE,
+                                               new_tab->num_buckets * 6 * sizeof(st_data_t));
+    new_tab->num_expands = 0;
     new_tab->num_expands_threshold = EXPANSION_RATIO * new_tab->num_buckets;
     new_tab->version = tab->version + 1;
 
     memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
-    for (b = 0; b < tab->num_buckets; b++) {
-        st_bucket * bu_cur = tab->bucket + b;
-        bucket_copy(bu_cur, new_tab);
-    }
+    memset(new_tab->ordered_entry, 0, new_tab->num_buckets * 6 * sizeof(st_data_t));
+    // for (b = 0; b < tab->num_buckets; b++) {
+    //     st_bucket * bu_cur = tab->bucket + b;
+    //     bucket_copy(bu_cur, new_tab);
+    // }
+    bucket_copy_ordered(new_tab, tab);
 
     tab->table_new = tab;
-    tab->version = new_tab->version;
-    tab->num_expands = 0;
-    tab->num_buckets = new_tab->num_buckets;
+    tab->version++;
+    tab->num_expands = new_tab->num_expands;
     tab->bucket = new_tab->bucket;
+    tab->num_buckets = new_tab->num_buckets;
+    tab->entry_bound = new_tab->entry_bound;
+    tab->ordered_entry = new_tab->ordered_entry;
     tab->num_expands_threshold = new_tab->num_expands_threshold;
     free(new_tab);
     TRYLOCK_RLS(tab->resize_lock);
@@ -779,13 +800,15 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
             if (UNLIKELY(empty == NULL)) {
                 st_bucket *b = bucket_create_stats(tab, &resize);
                 set_entry(&b->entry[0], hash_value, key, value);
+                tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
                 bucket->next = b;
 
             }
             else {
                 set_entry(empty, hash_value, key, value);
+                tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
             }
-
+            
             tab->num_entries++;
             LOCK_RLS(lock);
             assert(*lock == LOCK_FREE);
@@ -851,11 +874,13 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
             if (UNLIKELY(empty == NULL)) {
                 st_bucket *b = bucket_create_stats(tab, &resize);
                 set_entry(&b->entry[0], hash_value, (*func)(key), value);
+                tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
                 bucket->next = b;
 
             }
             else {
                 set_entry(empty, hash_value, (*func)(key), value);
+                tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
             }
 
             tab->num_entries++;
@@ -883,15 +908,21 @@ st_copy(st_table *old_tab)
     new_tab->table_new = NULL;
     new_tab->resize_lock = LOCK_FREE;
     new_tab->num_expands = 0;
+    new_tab->entry_bound = 0;
     new_tab->num_buckets = old_tab->num_buckets;
-    new_tab->bucket = (st_bucket*) memalign(CACHE_LINE_SIZE, old_tab->num_buckets * sizeof(st_bucket));
+    new_tab->bucket = (st_bucket*) memalign(CACHE_LINE_SIZE, 
+                                            old_tab->num_buckets * sizeof(st_bucket));
+    new_tab->ordered_entry = (st_index_t*) memalign(CACHE_LINE_SIZE, 
+                                                    6 * old_tab->num_buckets * sizeof(st_data_t));
     new_tab->num_expands_threshold = old_tab->num_expands_threshold;
+    
     memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
-
-    for (b = 0; b < old_tab->num_buckets; b++) {
-        st_bucket *bu_cur = old_tab->bucket + b;
-        bucket_copy(bu_cur, new_tab);
-    }
+    memset(new_tab->ordered_entry, 0, new_tab->num_buckets * 6 * sizeof(st_data_t));
+    // for (b = 0; b < old_tab->num_buckets; b++) {
+    //     st_bucket *bu_cur = old_tab->bucket + b;
+    //     bucket_copy(bu_cur, new_tab);
+    // }
+    bucket_copy_ordered(new_tab, old_tab);
 
     return new_tab;
 }
@@ -966,21 +997,14 @@ st_shift(st_table *tab, st_data_t *key, st_data_t *value)
     size_t j;
     st_bucket *bucket = NULL;
 
-    for (bin = 0; bin < tab->num_buckets; bin++) {
-        bucket = tab->bucket + bin;
-
-        do {
-            for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-                if (!entry_empty(&bucket->entry[j])) {
-                    if (value != 0) 
-                        *value = bucket->entry[j].record;
-                    *key = bucket->entry[j].key;
-                    clear_entry(&bucket->entry[j]);
-                    return 1;
-                }
-            }
-            bucket = bucket->next;
-        } while (UNLIKELY(bucket != NULL));
+    for (j = 0; j < tab->entry_bound; j++) {
+        if (entry_empty((st_entry*)tab->ordered_entry[j])) continue;
+        st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
+        if (value != 0) 
+            *value = cur_entry->record;
+        *key = cur_entry->key;
+        clear_entry(cur_entry);
+        return 1;
     }
 
     if (value != 0) *value = 0;
@@ -1072,46 +1096,47 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
     int retval;
     st_bucket *bucket = NULL;
 
-    for (bin = 0; bin < tab->num_buckets; bin++) {
-	    bucket = tab->bucket + bin;
+    for (j = 0; j < tab->entry_bound; j++) {
+        if (j >= tab->num_entries) return 0;
 
-        do {
-            for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-                if (!entry_empty(&bucket->entry[j])) {
-                    retval = (*func)(bucket->entry[j].key, bucket->entry[j].record, arg, 0);
-                }
+        st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
 
-                if (version != tab->version) {
-                    if (check_p) {
-                        retval = (*func)(0, 0, arg, 1);
-                        return 1;
-                    }
-                }
+        retval = (*func)(cur_entry->key, cur_entry->record, arg, 0);
 
-                switch (retval) {
-                    case ST_CHECK:
-                        if (check_p) break;
-                    case ST_CONTINUE:
-                        break;
-                    case ST_STOP:
-                        return 0;
-                    case ST_DELETE: {
-                        key = bucket->entry[j].key;
-
-                        for (j1 = 0; j1 < ENTRIES_PER_BUCKET; j1++) {
-                            if (bucket->entry[j1].key == key) {
-                                clear_entry(&bucket->entry[j1]);
-                                break;
-                            }
-                        }
-                    }
-                }
+        if (version != tab->version) {
+            if (check_p) {
+                retval = (*func)(0, 0, arg, 1);
+                return 1;
             }
-            bucket = bucket->next;
-        } while (bucket != NULL);
-    }
+        }
 
-    return 1;
+        switch (retval) {
+            case ST_CHECK:
+                if (check_p) break;
+            case ST_CONTINUE:
+                break;
+            case ST_STOP:
+                return 0;
+            case ST_DELETE: 
+                clear_entry(cur_entry);
+                break;
+        }
+    }
+    // for (bin = 0; bin < tab->num_buckets; bin++) {
+	//     bucket = tab->bucket + bin;
+
+    //     do {
+    //         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+    //             if (!entry_empty(&bucket->entry[j])) {
+    //                 
+    //             }
+
+    //         }
+    //         bucket = bucket->next;
+    //     } while (bucket != NULL);
+    // }
+
+    return 0;
 }
 
 int
@@ -1133,26 +1158,37 @@ st_foreach_check(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
 static inline st_index_t
 st_general_keys(st_table *tab, st_data_t *keys, st_index_t size)
 {
-    st_index_t i, bin;
+    st_index_t j, bin;
     st_data_t *keys_start, *keys_end;
     st_bucket *bucket = NULL;
 
     keys_start = keys;
     keys_end = keys + size;
-    for (bin = 0; bin < tab->num_buckets; bin++) {
+
+    for (j = 0; j < tab->entry_bound; j++) {
+        if (j >= tab->num_entries) break;
+
         if (keys == keys_end)
             break;
-        bucket = tab->bucket + bin;
+        
+        st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
 
-        do {
-            for (i = 0; i < ENTRIES_PER_BUCKET; i++) {
-                if (!entry_empty(&bucket->entry[i])) {
-                    *keys++ = bucket->entry[i].key;
-                }
-            }
-            bucket = bucket->next;
-        } while (bucket != NULL);
+        *keys++ = cur_entry->key;
     }
+    // for (bin = 0; bin < tab->num_buckets; bin++) {
+    //     if (keys == keys_end)
+    //         break;
+    //     bucket = tab->bucket + bin;
+
+    //     do {
+    //         for (i = 0; i < ENTRIES_PER_BUCKET; i++) {
+    //             if (!entry_empty(&bucket->entry[i])) {
+    //                 *keys++ = bucket->entry[i].key;
+    //             }
+    //         }
+    //         bucket = bucket->next;
+    //     } while (bucket != NULL);
+    // }
 
     return keys - keys_start;
 }
@@ -1176,28 +1212,39 @@ st_keys_check(st_table *tab, st_data_t *keys, st_index_t size,
 static inline st_index_t
 st_general_values(st_table *tab, st_data_t *values, st_index_t size)
 {
-    st_index_t i, bin;
-    st_data_t *value_start, *value_end;
+    st_index_t j, bin;
+    st_data_t *values_start, *values_end;
     st_bucket *bucket = NULL;
 
-    value_start = values;
-    value_end = values + size;
-    for (bin = 0; bin < tab->num_buckets; bin++) {
-        if (values == value_end)
+    values_start = values;
+    values_end = values + size;
+    for (j = 0; j < tab->entry_bound; j++) {
+        if (j >= tab->num_entries) break;
+
+        if (values == values_end)
             break;
-        bucket = tab->bucket + bin;
+        
+        st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
 
-        do {
-            for (i = 0; i < ENTRIES_PER_BUCKET; i++) {
-                if (!entry_empty(&bucket->entry[i])) {
-                    *values++ = bucket->entry[i].record;
-                }
-            }
-            bucket = bucket->next;
-        } while (bucket != NULL);
+        *values++ = cur_entry->key;
     }
+    
+    // for (bin = 0; bin < tab->num_buckets; bin++) {
+    //     if (values == value_end)
+    //         break;
+    //     bucket = tab->bucket + bin;
 
-    return values - value_start;
+    //     do {
+    //         for (i = 0; i < ENTRIES_PER_BUCKET; i++) {
+    //             if (!entry_empty(&bucket->entry[i])) {
+    //                 *values++ = bucket->entry[i].record;
+    //             }
+    //         }
+    //         bucket = bucket->next;
+    //     } while (bucket != NULL);
+    // }
+
+    return values - values_start;
 }
 
 st_index_t
@@ -1552,16 +1599,17 @@ st_expand_table(st_table *tab, st_index_t size)
     tmp = st_init_table_with_size(tab->type, size);
     tmp->version = tab->version + 1;
     
-    for (b = 0; b < tab->num_buckets; b++) {
-        bu_cur = tab->bucket + b;
-        bucket_copy(bu_cur, tmp);
-    }
-
+    // for (b = 0; b < tab->num_buckets; b++) {
+    //     bu_cur = tab->bucket + b;
+    //     bucket_copy(bu_cur, tmp);
+    // }
+    bucket_copy_ordered(tmp, tab);
     tab->table_new = tmp;
     tab->version = tmp->version;
     tab->num_buckets = tmp->num_buckets;
-    tab->num_expands = 0;
+    tab->num_expands = tmp->num_expands;
     tab->bucket = tmp->bucket;
+    tab->ordered_entry = tmp->ordered_entry;
     tab->num_expands_threshold = tmp->num_expands_threshold;
     free(old_tab);
     TRYLOCK_RLS(tab->resize_lock);
@@ -1589,7 +1637,7 @@ void print_ht(int mark, st_table *tab, int dis_bucket) {
                 if (dis_bucket) {
                     counter++;
                     st_entry *entry = &bucket->entry[j];
-                    printf(" #%u: {hash: %x, %u => %u} ", counter, entry->hash, entry->key, entry->record);
+                    printf(" #%u: {0x%x, %u => %u} ", counter, entry->hash, entry->key, entry->record);
                 }
             }
             bucket = bucket->next;
@@ -1617,8 +1665,6 @@ doublevalue(st_data_t *key, st_data_t *value, st_data_t arg, int existing) {
 static int
 foreach_func(st_data_t key, st_data_t val, st_data_t arg, int last) {
     printf("key: %u, value: %u\n", key, val);
-    if (key == 44) return ST_STOP;
-    if (key & 1) { printf("deleting key: %u\n", key); return ST_DELETE; }
     return ST_CONTINUE;
 }
 
@@ -1653,13 +1699,13 @@ int main() {
     int (*delete_func_p)(st_data_t, st_data_t, st_data_t, int) = &foreach_delete_func;
 
     printf("sizeof st_table: %d\n", sizeof(st_table));
-    printf("sizeof st_bucket: %d\n\n", sizeof(st_bucket));
-
+    printf("sizeof st_bucket: %d\n", sizeof(st_bucket));
+    printf("sizeof st_entry: %d\n\n", sizeof(st_entry));
 
     /* 1. Tests for creating table with various size
      *
      */
-    st_table *tab = st_init_numtable_with_size(100);   
+    st_table *tab = st_init_numtable_with_size(100); 
     for (i = 1; i <= 300; i++) {
         st_insert(tab, i, i);
         assert(tab->num_entries == i);
@@ -1678,6 +1724,7 @@ int main() {
     assert(cpy->version == tab->version);
     assert(cpy->num_buckets == tab->num_buckets);
     assert(cpy->num_expands == tab->num_expands);
+    assert(cpy->num_entries == tab->num_entries);
     assert(cpy->num_expands_threshold == tab->num_expands_threshold);
     assert(cpy->type == tab->type);
     assert(cpy->resize_lock == LOCK_FREE);
@@ -1718,24 +1765,22 @@ int main() {
         }
     }
 
-    /* Tests for rebuild_table()
-     *
-     */ 
-    int t_num_buckets = tab->num_buckets;
-    rebuild_table(tab, 1, 2);
-    assert(t_num_buckets < tab->num_buckets);
-
-
     /* 5. Tests for auto resizeing operation, the table should resize if hit
      * expansion threshold. The assert judge whether all value can be found 
      * in the hash table.   
      */
+    int prev_num_buckets = tab->num_buckets;
+    rebuild_table(tab, 1, 2);
+    assert(prev_num_buckets < tab->num_buckets);
+
     st_table *resize_tab;
     for (ii = 1; ii < 3000; ii++) {
         resize_tab = st_init_numtable();
         for (i = 1; i <= ii; i++) {
             st_insert(resize_tab, i, i);
         }
+        //print_ht(ii, resize_tab, 1);
+        //st_foreach(resize_tab, foreach_func, (st_data_t)1);
         for (i = 1, result = 0; i <= ii; i++) {
             int ret = st_lookup(resize_tab, i, p_result);
             assert(ret);
@@ -1754,32 +1799,15 @@ int main() {
     ret_k = ret_v = 0;
     assert(ret_k == 0);
     assert(ret_v == 0);
-    for (i = 1; i < 15; i++) {
+    for (i = 1; i <= 100; i++) {
         st_insert(empty, i, i);
     }
-    for (i = 1; i < 15; i++) {
+    for (i = 1; i <= 100; i++) {
         ret = st_shift(empty, &ret_k, &ret_v);
         assert(ret != 0);
-        assert(ret_k != 0);
-        assert(ret_v != 0);
+        assert(ret_k == i);
+        assert(ret_v == i);
     }
-
-    ret_k = ret_v = 0;
-    assert(ret_k == 0);
-    assert(ret_v == 0);
-    resize_tab = st_init_numtable();
-    for (i = 1; i <= 100; i++) {
-        st_insert(resize_tab, i, i);
-    }
-    for (i = 1; i <= 100; i++) {
-        ret = st_shift(resize_tab, &ret_k, &ret_v);
-        assert(ret != 0);
-        assert(ret_k != 0);
-        assert(ret_v != 0);
-    }
-    ret = st_shift(resize_tab, &ret_k, &ret_v);
-    assert(ret == 0);
-    free(resize_tab);
 
 
     /* 7. Tests for st_get_key() */
@@ -1807,13 +1835,19 @@ int main() {
 
     /* 9. Tests for st_foreach() */
     st_table *tab9 = st_init_numtable();
-    for (i = 1; i < 100; i++) {
+    for (i = 100; i <= 200; i++) {
         st_insert(tab9, i, i);
     }
+
+    ret = st_foreach(resize_tab, foreach_func, (st_data_t)1);
+    assert(ret == 0);
+
     ret = st_foreach(tab9, continue_func_p, (st_data_t)1);
-    assert(ret == 1);
+    assert(ret == 0);
+
     ret = st_foreach(tab9, stop_func_p, (st_data_t)1);
     assert(ret == 0);
+
     ret = st_foreach(tab9, delete_func_p, (st_data_t)1);
     for (i = 1; i < 100; i++) {
         if (i & 1) {
@@ -1837,6 +1871,8 @@ int main() {
     ret = st_values(tab10, values_p, 100);
     assert(ret == 100);
     for (i = 0; i< 100; i++) {
+        assert(keys[i] == (i + 1));
+        assert(values[i] == (i + 1));
         assert(keys[i] == values[i]);        
     }
     free(tab10);
@@ -1851,6 +1887,6 @@ int main() {
         assert(ret);
         assert(*p_result == i);
     }
-    print_ht(1, tab11, 1);
+    //print_ht(1, tab11, 1);
     return 0;
 }
