@@ -256,6 +256,35 @@ entry_empty(st_entry* entry)
     return entry == NULL || (entry->key == 0 && entry->hash == 0);
 }
 
+static int
+make_tab_empty(st_table *tab)
+{
+    st_data_t bin;
+    st_bucket *bucket, *prev_bucket;
+
+    if (TRYLOCK_ACQ(&tab->resize_lock))
+	    return 0;
+
+    tab->num_expands = 0;
+    tab->num_entries = 0;
+    tab->entry_bound = 0;
+    tab->resize_lock = LOCK_FREE;
+    for (bin = 0; bin < tab->num_buckets; bin++) {
+        bucket = tab->bucket + bin;
+        bucket = bucket->next;
+        if (bucket == NULL) continue;
+        while (bucket->next != NULL) {
+            prev_bucket = bucket;
+            bucket = bucket->next;
+            free(prev_bucket);
+        }
+        free(bucket);
+    }
+    memset(tab->ordered_entry, 0, tab->num_buckets * 6 * sizeof(st_data_t));
+    memset(tab->bucket, 0, tab->num_buckets * (sizeof(st_bucket)));
+    return 1;
+}
+
 /* These macros define reserved values for empty table bin and table
    bin which contains a deleted entry.  We will never use such values
    for an entry index in bins.  */
@@ -286,7 +315,7 @@ entry_empty(st_entry* entry)
 static inline st_index_t
 hash_bin(st_table *tab, st_data_t key)
 {
-    return do_hash(key, tab) & tab->num_buckets - 1;
+    return do_hash(key, tab) & (tab->num_buckets - 1);
 }
 
 #ifdef ST_DEBUG
@@ -413,7 +442,7 @@ st_table *
 st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
 {
     st_table *tab;
-    st_data_t n, num_buckets;
+    int n;
 #ifdef HASH_LOG
 #if HASH_LOG+0 < 0
     {
@@ -436,15 +465,14 @@ st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
     tab->num_expands = 0;
     tab->num_entries = 0;
     tab->entry_bound = 0;
-    num_buckets = n < SMALL_TABLE_THRESHOLD ? size + 1 : ((st_data_t)1 << n);
-    tab->num_buckets = num_buckets;
-    tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, num_buckets * sizeof(st_bucket));
+    tab->num_buckets = n < SMALL_TABLE_THRESHOLD ? size + 1 : ((st_data_t)1 << n);
+    tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, tab->num_buckets * sizeof(st_bucket));
     tab->ordered_entry = (st_index_t *) memalign(CACHE_LINE_SIZE,
-                                               num_buckets * 6 * sizeof(st_data_t));
-    tab->num_expands_threshold = EXPANSION_RATIO * num_buckets;
+                                               tab->num_buckets * 6 * sizeof(st_data_t));
+    tab->num_expands_threshold = EXPANSION_RATIO * tab->num_buckets;
 
-    memset(tab->ordered_entry, 0, num_buckets * 6 * sizeof(st_data_t));
-    memset(tab->bucket, 0, num_buckets * (sizeof(st_bucket)));
+    memset(tab->ordered_entry, 0, tab->num_buckets * 6 * sizeof(st_data_t));
+    memset(tab->bucket, 0, tab->num_buckets * (sizeof(st_bucket)));
 
 #ifdef ST_DEBUG
     st_check(tab);
@@ -510,8 +538,8 @@ st_init_strcasetable_with_size(st_index_t size)
 void
 st_clear(st_table *tab)
 {
-//     make_tab_empty(tab);
-//     tab->rebuilds_num++;
+     make_tab_empty(tab);
+     tab->version++;
 #ifdef ST_DEBUG
     st_check(tab);
 #endif
@@ -521,9 +549,9 @@ st_clear(st_table *tab)
 void
 st_free_table(st_table *tab)
 {
-    // if (tab->bins != NULL)
-    //     free(tab->bins);
+    make_tab_empty(tab);
     free(tab->bucket);
+    free(tab->ordered_entry);
     free(tab);
 }
 
@@ -586,39 +614,8 @@ count_collision(const struct st_hash_type *type)
 #error "REBUILD_THRESHOLD should be >= 2"
 #endif
 
-/* put object into hash table, this function wouldn't hit rebuilding 
-   so be sure that the hash table have enough capacity before invoke 
-   this function */
 static int
-st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
-{
-    st_bucket *bucket = tab->bucket + bin;
-    st_hash_t hash_value = do_hash(key, tab);
-    size_t j;
-
-    do {
-        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
-            if (entry_empty(&bucket->entry[j])) {
-                set_entry(&bucket->entry[j], hash_value, key, val);
-                tab->ordered_entry[tab->entry_bound++] = (st_index_t)&bucket->entry[j];
-                tab->num_entries++;
-                return 1;
-            }
-        }
-
-        if (bucket->next == NULL) {
-            int null;
-            st_bucket *b = bucket_create_stats(tab, &null);
-            set_entry(&b->entry[0], hash_value, key, val);
-            tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
-            bucket->next = b;
-            tab->num_entries++;
-            return 1;
-        }
-        
-        bucket = bucket->next;
-    } while (1);
-}
+st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin);
 
 static int 
 bucket_copy(st_bucket *bucket, st_table *tab)
@@ -653,6 +650,7 @@ bucket_copy_ordered(st_table *new_tab, st_table *old_tab)
         st_index_t bin = hash_bin(new_tab, cur_entry->key);
         st_put_seq(new_tab, cur_entry->key, cur_entry->record, bin);
     }
+    return 1;
 }
 /* Rebuild table TAB.  Rebuilding removes all deleted bins and entries
    and can change size of the table entries and bins arrays.
@@ -676,14 +674,13 @@ rebuild_table(st_table *tab, int is_increase, int by)
 
     new_tab = (st_table *) memalign(CACHE_LINE_SIZE, sizeof(st_table));
     new_tab->type = tab->type;
-    new_tab->num_buckets = tab->num_buckets * by;
     new_tab->entry_bound = 0;
+    new_tab->num_expands = 0;
+    new_tab->num_buckets = tab->num_buckets * by;
     new_tab->bucket = (st_bucket *) memalign(CACHE_LINE_SIZE, new_tab->num_buckets * sizeof(st_bucket));
     new_tab->ordered_entry = (st_index_t *) memalign(CACHE_LINE_SIZE,
                                                new_tab->num_buckets * 6 * sizeof(st_data_t));
-    new_tab->num_expands = 0;
     new_tab->num_expands_threshold = EXPANSION_RATIO * new_tab->num_buckets;
-    new_tab->version = tab->version + 1;
 
     memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
     memset(new_tab->ordered_entry, 0, new_tab->num_buckets * 6 * sizeof(st_data_t));
@@ -695,8 +692,8 @@ rebuild_table(st_table *tab, int is_increase, int by)
 
     tab->table_new = tab;
     tab->version++;
-    tab->num_expands = new_tab->num_expands;
     tab->bucket = new_tab->bucket;
+    tab->num_expands = new_tab->num_expands;
     tab->num_buckets = new_tab->num_buckets;
     tab->entry_bound = new_tab->entry_bound;
     tab->ordered_entry = new_tab->ordered_entry;
@@ -707,6 +704,55 @@ rebuild_table(st_table *tab, int is_increase, int by)
     return 1;
 }
 
+/* put object into hash table, this function wouldn't hit rebuilding 
+   so be sure that the hash table have enough capacity before invoke 
+   this function */
+static int
+st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
+{
+    st_bucket *bucket = tab->bucket + bin;
+    st_hash_t hash_value = do_hash(key, tab);
+    st_lock_t *lock = &bucket->lock;
+    size_t j;
+    int resize = 0;
+
+    while (!LOCK_ACQ(lock, tab)) {
+        bin = hash_bin(tab, key);
+        bucket = tab->bucket + bin;
+        lock = &bucket->lock;
+    }
+
+    do {
+        for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
+            if (entry_empty(&bucket->entry[j])) {
+                set_entry(&bucket->entry[j], hash_value, key, val);
+                tab->ordered_entry[tab->entry_bound++] = (st_index_t)&bucket->entry[j];
+		        assert(tab->entry_bound < tab->num_buckets * 6);
+                tab->num_entries++;
+		        LOCK_RLS(lock);
+                return 1;
+            }
+        }
+
+        if (bucket->next == NULL) {
+            st_bucket *b = bucket_create_stats(tab, &resize);
+            set_entry(&b->entry[0], hash_value, key, val);
+            tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
+	        assert(tab->entry_bound < tab->num_buckets * 6);
+            bucket->next = b;
+
+            tab->num_entries++;    
+	        LOCK_RLS(lock);
+
+	        if (UNLIKELY(resize)) {
+                rebuild_table(tab, 1, 2);
+            }
+            return 1;
+        }
+        
+        bucket = bucket->next;
+    } while (1);
+}
 /* Find an entry with KEY in table TAB.  Return non-zero if we found
    it.  Set up *RECORD to the found entry record.  */
 int
@@ -790,7 +836,7 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
                     LOCK_RLS(lock);
                     return 1;
                 }
-            }
+            } // TODO: bucket->entry[j] should not be null
             else if (empty == NULL && entry_empty(&bucket->entry[j])) {
                 empty = &bucket->entry[j];
             }
@@ -801,12 +847,14 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
                 st_bucket *b = bucket_create_stats(tab, &resize);
                 set_entry(&b->entry[0], hash_value, key, value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
+                assert(tab->entry_bound < tab->num_buckets * 6);
                 bucket->next = b;
 
             }
             else {
                 set_entry(empty, hash_value, key, value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
+                assert(tab->entry_bound < tab->num_buckets * 6);
             }
             
             tab->num_entries++;
@@ -875,12 +923,14 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
                 st_bucket *b = bucket_create_stats(tab, &resize);
                 set_entry(&b->entry[0], hash_value, (*func)(key), value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
+                assert(tab->entry_bound < tab->num_buckets * 6);
                 bucket->next = b;
 
             }
             else {
                 set_entry(empty, hash_value, (*func)(key), value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
+                assert(tab->entry_bound < tab->num_buckets * 6);
             }
 
             tab->num_entries++;
@@ -1100,6 +1150,7 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
         if (j >= tab->num_entries) return 0;
 
         st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
+        if (entry_empty(cur_entry)) continue;
 
         retval = (*func)(cur_entry->key, cur_entry->record, arg, 0);
 
@@ -1119,6 +1170,7 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
                 return 0;
             case ST_DELETE: 
                 clear_entry(cur_entry);
+                tab->num_entries--;
                 break;
         }
     }
@@ -1167,11 +1219,12 @@ st_general_keys(st_table *tab, st_data_t *keys, st_index_t size)
 
     for (j = 0; j < tab->entry_bound; j++) {
         if (j >= tab->num_entries) break;
-
+        
         if (keys == keys_end)
             break;
         
         st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
+        if (entry_empty(cur_entry)) continue;
 
         *keys++ = cur_entry->key;
     }
@@ -1225,6 +1278,7 @@ st_general_values(st_table *tab, st_data_t *values, st_index_t size)
             break;
         
         st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
+        if (entry_empty(cur_entry)) continue;
 
         *values++ = cur_entry->key;
     }
@@ -1597,7 +1651,6 @@ st_expand_table(st_table *tab, st_index_t size)
     assert(tab->resize_lock == 0xff);
 
     tmp = st_init_table_with_size(tab->type, size);
-    tmp->version = tab->version + 1;
     
     // for (b = 0; b < tab->num_buckets; b++) {
     //     bu_cur = tab->bucket + b;
@@ -1605,10 +1658,11 @@ st_expand_table(st_table *tab, st_index_t size)
     // }
     bucket_copy_ordered(tmp, tab);
     tab->table_new = tmp;
-    tab->version = tmp->version;
+    tab->version++;
+    tab->bucket = tmp->bucket;
     tab->num_buckets = tmp->num_buckets;
     tab->num_expands = tmp->num_expands;
-    tab->bucket = tmp->bucket;
+    tab->entry_bound = tmp->entry_bound;
     tab->ordered_entry = tmp->ordered_entry;
     tab->num_expands_threshold = tmp->num_expands_threshold;
     free(old_tab);
@@ -1621,14 +1675,22 @@ st_expand_table(st_table *tab, st_index_t size)
 void print_ht(int mark, st_table *tab, int dis_bucket) {
     int j, bin = 0, counter = 0;
     printf("\n------------------------[MARK: %d]--------------------------------\n", mark);
-    printf("version: %u, num_bucket: %u, num_entries: %u, num_expands: %u, threshold: %u, resize_lock: %u", 
+    printf("version: %u, num_bucket: %u, num_entries: %u, num_expands: %u, threshold: %u, entry_bound: %u, resize_lock: %u", 
             tab->version,
             tab->num_buckets,
             tab->num_entries,
             tab->num_expands,
             tab->num_expands_threshold,
+            tab->entry_bound,
             tab->resize_lock);
-        
+
+    printf("\nordered entry: [");    
+    for (j = 0; j < tab->entry_bound; j++) {
+        st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
+        printf("%u => %u, ", cur_entry->key, cur_entry->record);
+    }
+    printf("]");
+
     for (bin = 0; bin < tab->num_buckets; bin++) {
         st_bucket *bucket = tab->bucket + bin;
         if (dis_bucket) printf("\n\n[bin: %u, lock: %u] ==> ", bin, bucket->lock);
@@ -1670,6 +1732,7 @@ foreach_func(st_data_t key, st_data_t val, st_data_t arg, int last) {
 
 static int
 foreach_continue_func(st_data_t key, st_data_t val, st_data_t arg, int last) {
+    if (arg != 1) printf("key: %u, value: %u\n", key, val);
     return ST_CONTINUE;
 }
 
@@ -1779,7 +1842,7 @@ int main() {
         for (i = 1; i <= ii; i++) {
             st_insert(resize_tab, i, i);
         }
-        //print_ht(ii, resize_tab, 1);
+        if (ii < 20) print_ht(ii, resize_tab, 1);
         //st_foreach(resize_tab, foreach_func, (st_data_t)1);
         for (i = 1, result = 0; i <= ii; i++) {
             int ret = st_lookup(resize_tab, i, p_result);
@@ -1839,9 +1902,6 @@ int main() {
         st_insert(tab9, i, i);
     }
 
-    ret = st_foreach(resize_tab, foreach_func, (st_data_t)1);
-    assert(ret == 0);
-
     ret = st_foreach(tab9, continue_func_p, (st_data_t)1);
     assert(ret == 0);
 
@@ -1887,6 +1947,8 @@ int main() {
         assert(ret);
         assert(*p_result == i);
     }
+    //print_ht(1, tab11, 1);
+    st_clear(tab11);
     //print_ht(1, tab11, 1);
     return 0;
 }
