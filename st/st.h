@@ -86,6 +86,7 @@ typedef st_data_t st_hash_t;
 
 typedef struct st_entry
 {
+    st_data_t index;
     st_data_t hash;
     st_data_t key;
     st_data_t record;
@@ -93,9 +94,7 @@ typedef struct st_entry
 
 struct ALIGNED(CACHE_LINE_SIZE) st_bucket
 {
-    st_lock_t lock;
     st_entry entry[ENTRIES_PER_BUCKET];
-    struct st_bucket* next;
 };
 
 struct ALIGNED(CACHE_LINE_SIZE) st_table
@@ -105,8 +104,6 @@ struct ALIGNED(CACHE_LINE_SIZE) st_table
             size_t version;
             st_index_t num_buckets;
             st_index_t num_entries;
-            st_index_t num_expands;
-            st_index_t num_expands_threshold;
             st_index_t entry_bound;
             volatile uint8_t resize_lock;
             const struct st_hash_type *type;
