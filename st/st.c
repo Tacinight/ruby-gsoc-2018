@@ -237,15 +237,17 @@ get_power2(st_index_t size)
 }
 
 static inline void
-clear_entry(st_entry* entry)
+clear_entry(st_table *tab, st_entry* entry)
 {
     entry->hash = 0;
     entry->key = 0;
+    tab->ordered_entry[entry->index] = 0;
 }
 
 static inline void
-set_entry(st_entry* entry, st_hash_t hash, st_data_t key, st_data_t val)
+set_entry(st_entry* entry, st_data_t index, st_hash_t hash, st_data_t key, st_data_t val)
 {
+    entry->index = index;
     entry->hash = hash;
     entry->record = val;
     entry->key = key;
@@ -572,20 +574,6 @@ try_compact_ordered_entry(st_table *tab)
     return 1;
 }
 
-static int
-clear_ordered_entry(st_table *tab, st_entry *entry)
-{
-    st_index_t j;
-
-    for (j = 0; j < tab->entry_bound; j++) {
-        if (tab->ordered_entry[j] == (st_data_t)entry) {
-            tab->ordered_entry[j] = 0;
-            return 1;
-        }
-    }
-    return 0;
-}
-
 /* Rebuild table TAB.  Rebuilding removes all deleted bins and entries
    and can change size of the table entries and bins arrays.
    Rebuilding is implemented by creation of a new table or by
@@ -615,10 +603,7 @@ rebuild_table(st_table *tab, int is_increase, int by)
 
     memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
     memset(new_tab->ordered_entry, 0, new_tab->num_buckets * 6 * sizeof(st_data_t));
-    // for (b = 0; b < tab->num_buckets; b++) {
-    //     st_bucket * bu_cur = tab->bucket + b;
-    //     bucket_copy(bu_cur, new_tab);
-    // }
+
     bucket_copy_ordered(new_tab, tab);
 
     tab->table_new = tab;
@@ -647,7 +632,7 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
 
     for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
         if (entry_empty(&bucket->entry[j])) {
-            set_entry(&bucket->entry[j], hash_value, key, val);
+            set_entry(&bucket->entry[j],tab->entry_bound, hash_value, key, val);
             tab->ordered_entry[tab->entry_bound++] = (st_index_t)&bucket->entry[j];
             try_compact_ordered_entry(tab);
             assert(tab->entry_bound < tab->num_buckets * 2);
@@ -672,7 +657,7 @@ st_lookup(st_table *tab, st_data_t key, st_data_t *value)
 
     total_hops = MAX_HOPS > tab->num_buckets - bin ? tab->num_buckets - bin : MAX_HOPS;
 
-    for (hops = 0; hops < total_hops; hops++, bucket++) {
+    for (hops = 0; hops < total_hops; hops++) {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             st_data_t val = bucket->entry[j].record;
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
@@ -703,7 +688,7 @@ st_get_key(st_table *tab, st_data_t key, st_data_t *result)
 
     total_hops = MAX_HOPS > tab->num_buckets - bin ? tab->num_buckets - bin : MAX_HOPS;
 
-    for (hops = 0; hops < total_hops; hops++, bucket++) {
+    for (hops = 0; hops < total_hops; hops++) {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             st_data_t val = bucket->entry[j].record;
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
@@ -722,17 +707,21 @@ st_get_key(st_table *tab, st_data_t key, st_data_t *result)
 int
 st_insert(st_table *tab, st_data_t key, st_data_t value)
 {
-retry:
-    st_index_t bin = hash_bin(tab, key);
-    st_bucket *bucket = tab->bucket + bin;
-    st_hash_t hash_value = do_hash(key, tab);
-    st_entry *empty = NULL;
     size_t j, hops, total_hops;
-    int resize = 0;
+    st_bucket *bucket = NULL;
+    st_entry *empty;
+    st_index_t bin;
+    st_hash_t hash_value;
 
-    total_hops = MAX_HOPS > tab->num_buckets - bin ? tab->num_buckets - bin : MAX_HOPS;
+retry:
+    empty = NULL;
+    bin = hash_bin(tab, key);
+    hash_value = do_hash(key, tab);
 
-    for (hops = 0; hops < total_hops; hops++, bucket++) {
+    for (hops = 0; hops < total_hops; hops++) {
+        bin = bin + hops > tab->num_buckets ? 0 : bin + hops;
+        bucket = tab->bucket + bin;
+
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             st_data_t val = bucket->entry[j].record;
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
@@ -746,20 +735,21 @@ retry:
             }
         }
              
-        if (UNLIKELY(empty == NULL)) {
-            rebuild_table(tab, 1, 2);
-            goto retry;
-        }
-        else {
-            set_entry(empty, hash_value, key, value);
+        if (empty != NULL) {
+            set_entry(empty, tab->entry_bound, hash_value, key, value);
             tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
             try_compact_ordered_entry(tab);
             assert(tab->entry_bound < tab->num_buckets * 2);
+            tab->num_entries++;
+            return 0;
         }
-
-        tab->num_entries++;
-        return 0;
     }
+
+    if (empty == NULL) {
+        rebuild_table(tab, 1, 2);
+        goto retry;
+    }
+    fprintf(stderr, "st inpossible execution path");
 }
 
 /* Insert (KEY, VALUE) into table TAB.  The table should not have
@@ -778,17 +768,21 @@ int
 st_insert2(st_table *tab, st_data_t key, st_data_t value,
            st_data_t (*func)(st_data_t))
 {
-retry:
-    st_index_t bin = hash_bin(tab, key);
-    st_bucket *bucket = tab->bucket + bin;
-    st_hash_t hash_value = do_hash(key, tab);
-    st_entry *empty = NULL;
-    int resize = 0;
     size_t j, hops, total_hops;
+    st_bucket *bucket = NULL;
+    st_entry *empty;
+    st_index_t bin;
+    st_hash_t hash_value;
 
-    total_hops = MAX_HOPS > tab->num_buckets - bin ? tab->num_buckets - bin : MAX_HOPS;
+retry:
+    empty = NULL;
+    bin = hash_bin(tab, key);
+    hash_value = do_hash(key, tab);
 
-    for (hops = 0; hops < total_hops; hops++, bucket++) {
+    for (hops = 0; hops < total_hops; hops++) {
+        bin = bin + hops > tab->num_buckets ? 0 : bin + hops;
+        bucket = tab->bucket + bin;
+        
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             st_data_t val = bucket->entry[j].record;
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
@@ -803,11 +797,12 @@ retry:
         }
 
         if (empty != NULL) {
-            set_entry(empty, hash_value, (*func)(key), value);
+            set_entry(empty,tab->entry_bound, hash_value, (*func)(key), value);
             tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
             try_compact_ordered_entry(tab);
             assert(tab->entry_bound < tab->num_buckets * 2);
             tab->num_entries++;
+            return 0;
         }
     }
 
@@ -815,6 +810,7 @@ retry:
         rebuild_table(tab, 1, 2);
         goto retry;
     }
+    fprintf(stderr, "st inpossible execution path");
 }
 
 /* Create and return a copy of table OLD_TAB.  */
@@ -836,10 +832,7 @@ st_copy(st_table *old_tab)
     
     memset(new_tab->bucket, 0, new_tab->num_buckets * (sizeof(st_bucket)));
     memset(new_tab->ordered_entry, 0, new_tab->num_buckets * 6 * sizeof(st_data_t));
-    // for (b = 0; b < old_tab->num_buckets; b++) {
-    //     st_bucket *bu_cur = old_tab->bucket + b;
-    //     bucket_copy(bu_cur, new_tab);
-    // }
+
     bucket_copy_ordered(new_tab, old_tab);
 
     return new_tab;
@@ -853,18 +846,18 @@ st_copy(st_table *old_tab)
 static int
 st_general_delete(st_table *tab, st_data_t *key, st_data_t *value)
 {
-    st_index_t bin = hash_bin(tab, *key);
-    st_bucket *bucket = tab->bucket + bin;
-    st_hash_t hash_value = do_hash(*key, tab);
     size_t j, hops, total_hops;
+    st_bucket *bucket = NULL;
+    st_index_t bin = hash_bin(tab, *key);
+    st_hash_t hash_value = do_hash(*key, tab);
 
-    total_hops = MAX_HOPS > tab->num_buckets - bin ? tab->num_buckets - bin : MAX_HOPS;
-
-    for (hops = 0; hops < total_hops; hops++, bucket++) {
+    for (hops = 0; hops < total_hops; hops++) {
+        bin = bin + hops > tab->num_buckets ? 0 : bin + hops;
+        bucket = tab->bucket + bin;
+        
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, *key)) {
-                clear_entry(&bucket->entry[j]);
-                clear_ordered_entry(tab, &bucket->entry[j]);
+                clear_entry(tab, &bucket->entry[j]);
                 if (value != 0) 
                     *value = bucket->entry[j].record;
                 return 1;
@@ -901,9 +894,7 @@ st_delete_safe(st_table *tab, st_data_t *key, st_data_t *value,
 int
 st_shift(st_table *tab, st_data_t *key, st_data_t *value)
 {
-    st_index_t bin;
     size_t j;
-    st_bucket *bucket = NULL;
 
     for (j = 0; j < tab->entry_bound; j++) {
         if (entry_empty((st_entry*)tab->ordered_entry[j])) continue;
@@ -911,8 +902,7 @@ st_shift(st_table *tab, st_data_t *key, st_data_t *value)
         if (value != 0) 
             *value = cur_entry->record;
         *key = cur_entry->key;
-        clear_entry(cur_entry);
-        clear_ordered_entry(tab, cur_entry);
+        clear_entry(tab, cur_entry);
         return 1;
     }
 
@@ -939,17 +929,18 @@ int
 st_update(st_table *tab, st_data_t key,
 	  st_update_callback_func *func, st_data_t arg)
 {
-    st_index_t bin = hash_bin(tab, key);
-    st_entry *cur_entry = NULL;
     st_data_t value = 0, old_key;
     int retval, existing = 0;
-    st_bucket *bucket = tab->bucket + bin;
-    st_hash_t hash_value = do_hash(key, tab);
     size_t j, hops, total_hops;
+    st_bucket *bucket = NULL;
+    st_entry *cur_entry = NULL;
+    st_hash_t hash_value = do_hash(key, tab);
+    st_index_t bin = hash_bin(tab, key);
 
-    total_hops = MAX_HOPS > tab->num_buckets - bin ? tab->num_buckets - bin : MAX_HOPS;
+    for (hops = 0; hops < total_hops; hops++) {
+        bin = bin + hops > tab->num_buckets ? 0 : bin + hops;
+        bucket = tab->bucket + bin;
 
-    for (hops = 0; hops < total_hops; hops++, bucket++) {
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             st_data_t val = bucket->entry[j].record;
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, key)) {
@@ -980,8 +971,7 @@ st_update(st_table *tab, st_data_t key,
             break;
         case ST_DELETE: 
             if (existing) {
-                clear_entry(cur_entry);
-                clear_ordered_entry(tab, cur_entry);
+                clear_entry(tab, cur_entry);
                 tab->num_entries--;
             }
             break;
@@ -1029,8 +1019,7 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
             case ST_STOP:
                 return 0;
             case ST_DELETE: 
-                clear_entry(cur_entry);
-                clear_ordered_entry(tab, cur_entry);
+                clear_entry(tab, cur_entry);
                 tab->num_entries--;
                 break;
         }
@@ -1470,11 +1459,7 @@ st_expand_table(st_table *tab, st_index_t size)
     assert(tab->resize_lock == 0xff);
 
     tmp = st_init_table_with_size(tab->type, size);
-    
-    // for (b = 0; b < tab->num_buckets; b++) {
-    //     bu_cur = tab->bucket + b;
-    //     bucket_copy(bu_cur, tmp);
-    // }
+
     bucket_copy_ordered(tmp, tab);
     tab->table_new = tmp;
     tab->version++;
