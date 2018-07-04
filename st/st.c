@@ -652,6 +652,44 @@ bucket_copy_ordered(st_table *new_tab, st_table *old_tab)
     }
     return 1;
 }
+
+static int
+try_compact_ordered_entry(st_table *tab)
+{
+    st_data_t empty, non_empty;
+
+    if (tab->entry_bound < tab->num_buckets * 6) return 1;
+    printf("Doing compaction: %u, %u", tab->entry_bound, tab->num_buckets);
+    for (empty = 0, non_empty = 1; non_empty < tab->entry_bound; ++empty, ++non_empty) {
+        while (!entry_empty((st_entry*)tab->ordered_entry[empty]))
+            empty++;
+
+        if (non_empty <= empty) non_empty = empty + 1;
+        while (entry_empty((st_entry*)tab->ordered_entry[non_empty]))
+            non_empty++;
+        
+        tab->ordered_entry[empty] = tab->ordered_entry[non_empty];
+        tab->ordered_entry[non_empty] = 0;
+    }
+    printf("compaction done: %u => %u\n", tab->entry_bound, empty);
+    tab->entry_bound = empty;
+    return 1;
+}
+
+static int
+clear_ordered_entry(st_table *tab, st_entry *entry)
+{
+    st_index_t j;
+
+    for (j = 0; j < tab->entry_bound; j++) {
+        if (tab->ordered_entry[j] == (st_data_t)entry) {
+            tab->ordered_entry[j] = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Rebuild table TAB.  Rebuilding removes all deleted bins and entries
    and can change size of the table entries and bins arrays.
    Rebuilding is implemented by creation of a new table or by
@@ -727,7 +765,8 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
             if (entry_empty(&bucket->entry[j])) {
                 set_entry(&bucket->entry[j], hash_value, key, val);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)&bucket->entry[j];
-		        assert(tab->entry_bound < tab->num_buckets * 6);
+		        try_compact_ordered_entry(tab);
+                assert(tab->entry_bound < tab->num_buckets * 6);
                 tab->num_entries++;
 		        LOCK_RLS(lock);
                 return 1;
@@ -738,7 +777,8 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
             st_bucket *b = bucket_create_stats(tab, &resize);
             set_entry(&b->entry[0], hash_value, key, val);
             tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
-	        assert(tab->entry_bound < tab->num_buckets * 6);
+	        try_compact_ordered_entry(tab);
+            assert(tab->entry_bound < tab->num_buckets * 6);
             bucket->next = b;
 
             tab->num_entries++;    
@@ -847,6 +887,7 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
                 st_bucket *b = bucket_create_stats(tab, &resize);
                 set_entry(&b->entry[0], hash_value, key, value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
+                try_compact_ordered_entry(tab);
                 assert(tab->entry_bound < tab->num_buckets * 6);
                 bucket->next = b;
 
@@ -854,6 +895,7 @@ st_insert(st_table *tab, st_data_t key, st_data_t value)
             else {
                 set_entry(empty, hash_value, key, value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
+                try_compact_ordered_entry(tab);
                 assert(tab->entry_bound < tab->num_buckets * 6);
             }
             
@@ -923,6 +965,7 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
                 st_bucket *b = bucket_create_stats(tab, &resize);
                 set_entry(&b->entry[0], hash_value, (*func)(key), value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)&b->entry[0];
+                try_compact_ordered_entry(tab);
                 assert(tab->entry_bound < tab->num_buckets * 6);
                 bucket->next = b;
 
@@ -930,6 +973,7 @@ st_insert2(st_table *tab, st_data_t key, st_data_t value,
             else {
                 set_entry(empty, hash_value, (*func)(key), value);
                 tab->ordered_entry[tab->entry_bound++] = (st_index_t)empty;
+                try_compact_ordered_entry(tab);
                 assert(tab->entry_bound < tab->num_buckets * 6);
             }
 
@@ -1002,6 +1046,7 @@ st_general_delete(st_table *tab, st_data_t *key, st_data_t *value)
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             if (PTR_EQUAL(tab, bucket->entry[j], hash_value, *key)) {
                 clear_entry(&bucket->entry[j]);
+                clear_ordered_entry(tab, &bucket->entry[j]);
                 if (value != 0) 
                     *value = bucket->entry[j].record;
                 LOCK_RLS(lock);
@@ -1054,6 +1099,7 @@ st_shift(st_table *tab, st_data_t *key, st_data_t *value)
             *value = cur_entry->record;
         *key = cur_entry->key;
         clear_entry(cur_entry);
+        clear_ordered_entry(tab, cur_entry);
         return 1;
     }
 
@@ -1122,6 +1168,7 @@ st_update(st_table *tab, st_data_t key,
         case ST_DELETE: 
             if (existing) {
                 clear_entry(cur_entry);
+                clear_ordered_entry(tab, cur_entry);
                 tab->num_entries--;
             }
             break;
@@ -1170,6 +1217,7 @@ st_general_foreach(st_table *tab, int (*func)(ANYARGS), st_data_t arg,
                 return 0;
             case ST_DELETE: 
                 clear_entry(cur_entry);
+                clear_ordered_entry(tab, cur_entry);
                 tab->num_entries--;
                 break;
         }
@@ -1687,6 +1735,10 @@ void print_ht(int mark, st_table *tab, int dis_bucket) {
     printf("\nordered entry: [");    
     for (j = 0; j < tab->entry_bound; j++) {
         st_entry *cur_entry = (st_entry*)tab->ordered_entry[j];
+        if (cur_entry == NULL) {
+            printf("NULL, ");
+            continue;
+        }
         printf("%u => %u, ", cur_entry->key, cur_entry->record);
     }
     printf("]");
@@ -1842,7 +1894,7 @@ int main() {
         for (i = 1; i <= ii; i++) {
             st_insert(resize_tab, i, i);
         }
-        if (ii < 20) print_ht(ii, resize_tab, 1);
+        if (ii < 0) print_ht(ii, resize_tab, 1);
         //st_foreach(resize_tab, foreach_func, (st_data_t)1);
         for (i = 1, result = 0; i <= ii; i++) {
             int ret = st_lookup(resize_tab, i, p_result);
@@ -1950,5 +2002,19 @@ int main() {
     //print_ht(1, tab11, 1);
     st_clear(tab11);
     //print_ht(1, tab11, 1);
+
+    /* 12. Tests for try_compact_ordered_entry() */
+    st_table *tab12 = st_init_numtable();
+    for (i = 1; i < 20; i++)
+        st_insert(tab12, i, i);
+    key = 1;
+    *p_result = 0;
+    
+    for (i = 1; i < 20; i++) {
+        st_delete(tab12, &key, p_result);
+        st_insert(tab12, key, key);
+    }
+
+    printf("hash for 0: %x \n", do_hash(0, tab12));
     return 0;
 }
