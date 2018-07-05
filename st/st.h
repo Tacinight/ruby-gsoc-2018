@@ -108,7 +108,7 @@ struct ALIGNED(CACHE_LINE_SIZE) st_table
             volatile uint8_t resize_lock;
             const struct st_hash_type *type;
             st_table *table_new;
-            st_index_t *ordered_entry;
+            st_entry** ordered_entry;
             st_bucket* bucket;
         };
         uint8_t padding[1 * CACHE_LINE_SIZE];
