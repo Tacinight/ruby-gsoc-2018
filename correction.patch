@@ -1,0 +1,54 @@
+diff --git a/gc.c b/gc.c
+index 7518754ae5..5e342fd8b5 100644
+--- a/gc.c
++++ b/gc.c
+@@ -207,7 +207,7 @@ static ruby_gc_params_t gc_params = {
+ #ifndef GC_DEBUG
+ #define GC_DEBUG 0
+ #endif
+-
++int ruby_rgengc_debug;
+ #if USE_RGENGC
+ /* RGENGC_DEBUG:
+  * 1: basic information
+@@ -228,7 +228,7 @@ static ruby_gc_params_t gc_params = {
+ #else
+ # define RGENGC_DEBUG_ENABLED(level) ((RGENGC_DEBUG) >= (level))
+ #endif
+-int ruby_rgengc_debug;
++
+ 
+ /* RGENGC_CHECK_MODE
+  * 0: disable all assertions
+@@ -298,6 +298,9 @@ int ruby_rgengc_debug;
+ #define RGENGC_ESTIMATE_OLDMALLOC 0
+ #define RGENGC_FORCE_MAJOR_GC 0
+ 
++#define GC_ASSERT(expr) 0
++#define RGENGC_DEBUG_ENABLED(level) 0
++
+ #endif /* USE_RGENGC */
+ 
+ #ifndef GC_PROFILE_MORE_DETAIL
+@@ -5609,7 +5612,7 @@ gc_marks_finish(rb_objspace_t *objspace)
+ #else /* USE_RGENGC */
+ 	if (sweep_slots < min_free_slots) {
+ 	    gc_report(1, objspace, "gc_marks_finish: heap_set_increment!!\n");
+-	    heap_set_increment(objspace, heap_extend_pages(objspace, sweep_slot, total_slot));
++	    heap_set_increment(objspace, heap_extend_pages(objspace, sweep_slots, total_slots));
+ 	    heap_increment(objspace, heap);
+ 	}
+ #endif
+diff --git a/include/ruby/ruby.h b/include/ruby/ruby.h
+index e225606c2f..369319833f 100644
+--- a/include/ruby/ruby.h
++++ b/include/ruby/ruby.h
+@@ -762,7 +762,7 @@ VALUE rb_obj_setup(VALUE obj, VALUE klass, VALUE type);
+ #define DUPSETUP(dup,obj) rb_dup_setup(dup,obj)
+ 
+ #ifndef USE_RGENGC
+-#define USE_RGENGC 1
++#define USE_RGENGC 0
+ #ifndef USE_RINCGC
+ #define USE_RINCGC 1
+ #endif
