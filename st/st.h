@@ -102,6 +102,7 @@ struct ALIGNED(CACHE_LINE_SIZE) st_table
     union {
         struct {
             size_t version;
+            size_t max_hops;
             st_index_t num_buckets;
             st_index_t num_entries;
             st_index_t entry_bound;
