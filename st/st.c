@@ -539,23 +539,41 @@ try_compact_ordered_entry(st_table *tab)
     st_data_t empty, non_empty;
     st_entry *cur_entry;
 
-    if (tab->entry_bound < tab->num_buckets * 2) return 0;
     if (tab->entry_bound == tab->num_entries + 1) return 0; // compacted
-    printf("Doing compaction: %u, %u", tab->entry_bound, tab->num_buckets);
     for (empty = 0, non_empty = 1; non_empty < tab->entry_bound; ++empty, ++non_empty) {
-        while (!entry_empty(tab->ordered_entry[empty]))
+        while (!entry_empty(tab->ordered_entry[empty])) {
             empty++;
+            assert(empty <= tab->num_buckets * 2);
+        }
 
         if (non_empty <= empty) non_empty = empty + 1;
-        while (entry_empty(tab->ordered_entry[non_empty]))
+        while (entry_empty(tab->ordered_entry[non_empty])) {
             non_empty++;
-        
+            if (non_empty >= tab->entry_bound) goto done;
+        }
+
         tab->ordered_entry[empty] = tab->ordered_entry[non_empty];
         tab->ordered_entry[non_empty]->index = empty;
         tab->ordered_entry[non_empty] = 0;
     }
+done:
     printf("compaction done: %u => %u\n", tab->entry_bound, empty);
     tab->entry_bound = empty;
+    return empty;
+}
+
+static int
+set_ordered_entry(st_table* tab, st_entry* entry, st_hash_t hash, st_data_t key, st_data_t val)
+{
+    size_t ret = 0;
+
+    if (tab->entry_bound >= tab->num_buckets * 2)
+        ret = try_compact_ordered_entry(tab);
+
+    assert(ret <= tab->num_buckets * 2);
+    set_entry(entry, tab->entry_bound, hash, key, val);
+    tab->ordered_entry[tab->entry_bound++] = entry;
+
     return 1;
 }
 
@@ -626,10 +644,7 @@ st_put_seq(st_table *tab, st_data_t key, st_data_t val, st_data_t bin)
 
         for (j = 0; j < ENTRIES_PER_BUCKET; j++) {
             if (entry_empty(&bucket->entry[j])) {
-                set_entry(&bucket->entry[j],tab->entry_bound, hash_value, key, val);
-                tab->ordered_entry[tab->entry_bound++] = &bucket->entry[j];
-                try_compact_ordered_entry(tab);
-                assert(tab->entry_bound < tab->num_buckets * 2);
+                set_ordered_entry(tab, &bucket->entry[j], hash_value, key, val);
                 tab->num_entries++;
                 return 1;
             }
@@ -737,9 +752,7 @@ retry:
         }
 
         if (empty != NULL) {
-            set_entry(empty, tab->entry_bound, hash_value, key, value);
-            tab->ordered_entry[tab->entry_bound++] = empty;
-            try_compact_ordered_entry(tab);
+            set_ordered_entry(tab, empty, hash_value, key, value);
             tab->num_entries++;
             st_check(tab, run);
             return 0;
@@ -801,10 +814,7 @@ retry:
         }
 
         if (empty != NULL) {
-            set_entry(empty,tab->entry_bound, hash_value, (*func)(key), value);
-            tab->ordered_entry[tab->entry_bound++] = empty;
-            try_compact_ordered_entry(tab);
-            assert(tab->entry_bound <= tab->num_buckets * 2);
+            set_ordered_entry(tab, empty, hash_value, (*func)(key), value);
             tab->num_entries++;
             return 0;
         }
