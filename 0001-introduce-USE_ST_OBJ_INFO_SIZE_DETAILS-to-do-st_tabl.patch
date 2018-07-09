@@ -1,0 +1,70 @@
+From a8a96344fa3a77f1cf8f215c3e56caedf8f065bd Mon Sep 17 00:00:00 2001
+From: tacinight <tacingiht@gmail.com>
+Date: Wed, 4 Jul 2018 15:28:09 +0800
+Subject: [PATCH] introduce USE_ST_OBJ_INFO_SIZE_DETAILS to do st_table size
+ statistics
+
+Signed-off-by: tacinight <tacingiht@gmail.com>
+---
+ include/ruby/ruby.h |  4 ++++
+ st.c                | 22 ++++++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/include/ruby/ruby.h b/include/ruby/ruby.h
+index e225606c2f..58ae84e9ea 100644
+--- a/include/ruby/ruby.h
++++ b/include/ruby/ruby.h
+@@ -1062,6 +1062,10 @@ struct RRegexp {
+ #define RHASH_EMPTY_P(h) (RHASH_SIZE(h) == 0)
+ #define RHASH_SET_IFNONE(h, ifnone) rb_hash_set_ifnone((VALUE)h, ifnone)
+ 
++#ifndef USE_ST_OBJ_SIZE_DETAILS
++#define USE_ST_OBJ_SIZE_DETAILS 1
++#endif
++
+ struct RFile {
+     struct RBasic basic;
+     struct rb_io_t *fptr;
+diff --git a/st.c b/st.c
+index 1a47525707..782331ccf4 100644
+--- a/st.c
++++ b/st.c
+@@ -158,6 +158,25 @@ static const struct st_hash_type type_strcasehash = {
+     strcasehash,
+ };
+ 
++#if USE_ST_OBJ_SIZE_DETAILS
++
++#define ST_INFO_SIZE_SIZE 64
++
++static size_t st_info_size_cnt[ST_INFO_SIZE_SIZE];
++
++__attribute__((destructor))
++static void
++st_info_show_results(void)
++{
++    int i;
++    
++    fprintf(stderr, "* st_info size statictics\n");
++    for (i = 0; i < ST_INFO_SIZE_SIZE; i++) {
++	fprintf(stderr, "%i\t%d\n", i, (int)st_info_size_cnt[i]);
++    }
++}
++#endif
++
+ /* Value used to catch uninitialized entries/bins during debugging.
+    There is a possibility for a false alarm, but its probability is
+    extremely small.  */
+@@ -684,6 +703,9 @@ st_clear(st_table *tab)
+ void
+ st_free_table(st_table *tab)
+ {
++#if USE_ST_OBJ_SIZE_DETAILS
++st_info_size_cnt[tab->entry_power]++;
++#endif
+     if (tab->bins != NULL)
+         free(tab->bins);
+     free(tab->entries);
+-- 
+2.11.0
+
