@@ -1,21 +1,21 @@
 require 'pry'
 require 'benchmark'
 
-puts "Recirsove array : Started at #{Time.now}"
+puts "Recursive array : Started at #{Time.now}"
 
-a = [1]
+N = 30
 
-(1..150).each do |i| 
-  Benchmark.bm do |bench|
-    bench.report("#{i}\t") do
-      200000.times do
+Benchmark.bm do |bench|
+  N.times do |i|
+    bench.report("#{i} - #{2**i}\n") do
+      a = [1]
+      (2**i).times do |n|
         a = [a]
       end
+      p `ps ax -o pid,rss | grep -E "^[[:space:]]*#{$$}"`.strip.split.map(&:to_i)
     end 
   end 
 end
-
-p `ps ax -o pid,rss | grep -E "^[[:space:]]*#{$$}"`.strip.split.map(&:to_i)
 
 puts "Ended at #{Time.now}"
 
