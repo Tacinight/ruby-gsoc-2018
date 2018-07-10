@@ -1,0 +1,175 @@
+From 310a1a1d5f923c94ce2f45a5f0b7d02d032a6313 Mon Sep 17 00:00:00 2001
+From: tacinight <tacingiht@gmail.com>
+Date: Tue, 10 Jul 2018 22:10:08 +0800
+Subject: [PATCH] introduce LinearTable for small hash
+
+Signed-off-by: tacinight <tacingiht@gmail.com>
+---
+ hash.c     | 107 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ internal.h |  15 +++++++++
+ 2 files changed, 120 insertions(+), 2 deletions(-)
+
+diff --git a/hash.c b/hash.c
+index c9d60c7a56..f57ed5d67f 100644
+--- a/hash.c
++++ b/hash.c
+@@ -299,6 +299,104 @@ static const struct st_hash_type identhash = {
+     rb_ident_hash,
+ };
+ 
++#define EQUAL(tab,x,y) ((x) == (y) || (*(tab)->type->compare)((x),(y)) == 0)
++#define PTR_EQUAL(tab, ptr, hash_val, key_) \
++    ((ptr)->hash == (hash_val) && EQUAL((tab), (key_), (ptr)->key))
++
++static inline void
++CLEAR_ENTRY(li_table_entry* entry)
++{
++    entry->key = 0;
++    entry->hash = 0;
++}
++
++static inline int
++DELETED_ENTRY(li_table_entry *entry)
++{
++    return entry->key == 0 && entry->hash == 0;
++}
++
++static st_index_t
++find_entry(li_table *tab, st_hash_t hash_value, st_data_t key)
++{
++    size_t i;
++    st_table_entry *entries;
++
++    entries = tab->entries;
++    for (i = 0; i < LINEAR_TABLE_BOUND; i++) {
++	if (PTR_EQUAL(tab, &entries[i], hash_value, key))
++	      return i;
++    }
++    return LINEAR_TABLE_BOUND;
++}
++
++static int
++st_foreach_opt(li_table *tab, int (*func)(ANYARGS), st_data_t arg)
++{
++    size_t i;
++    li_table_entry *entries, *cur_entry;
++    enum st_retval retval;
++
++    entries = tab->entries;
++    for (i = 0; i < LINEAR_TABLE_BOUND; i++) {
++	cur_entry = &entries[i];
++	if (DELETED_ENTRY(cur_entry))
++	    continue;
++	retval = (*func)(cur_entry->key, cur_entry->record, arg, 0);
++	switch (retval) {
++	    case ST_CONTINUE:
++	        break;
++	    case ST_CHECK:
++	    case ST_STOP:
++	        return 0;
++	    case ST_DELETE:
++		CLEAR_ENTRY(cur_entry);
++		break;
++	}
++    }
++    return 0;
++}
++
++static int
++st_foreach_check_opt(li_table *tab, int (*func)(ANYARGS), st_data_t arg,
++                 st_data_t never ATTRIBUTE_UNUSED)
++{
++    size_t i;
++    li_table_entry *entries, *cur_entry;
++    enum st_retval retval;
++    st_data_t key;
++    st_hash_t hash;
++
++    entries = tab->entries;
++    for (i = 0; i < LINEAR_TABLE_BOUND; i++) {
++	cur_entry = &entries[i];
++	if ((DELETED_ENTRY(cur_entry))
++	    continue;
++	key = cur_entry->key;
++	hash = cur_entry->hash;
++	retval = (*func)(key, cur_entry->record, arg, 0);
++	switch (retval) {
++	    case ST_CHECK: {
++		i = find_entry(tab, hash, key);
++		if (i == LINEAR_TABLE_BOUND ||
++		    !PTR_EQUAL(tab, &entries[i], hash, key)) {
++		    retval = (*func)(0, 0, arg, 1);
++		    return 1;
++		}
++	    }
++	    case ST_CONTINUE:
++	        break;
++	    case ST_STOP:
++	        return 0;
++	    case ST_DELETE: {
++		CLEAR_ENTRY(cur_entry);
++		break;
++	    }
++	}
++    }
++    return 0;
++}
++
+ typedef int st_foreach_func(st_data_t, st_data_t, st_data_t);
+ 
+ struct foreach_safe_arg {
+@@ -384,7 +482,12 @@ static VALUE
+ hash_foreach_call(VALUE arg)
+ {
+     VALUE hash = ((struct hash_foreach_arg *)arg)->hash;
+-    if (st_foreach_check(RHASH(hash)->ntbl, hash_foreach_iter, (st_data_t)arg, (st_data_t)Qundef)) {
++    int ret = 0;
++    if (RHASH(hash)->ltbl)
++	ret = st_foreach_check_opt(RHASH(hash)->ltbl, hash_foreach_iter, (st_data_t)arg, (st_data_t)Qundef)
++    else if (RHASH(hash)->ntbl)
++	ret = st_foreach_check(RHASH(hash)->ntbl, hash_foreach_iter, (st_data_t)arg, (st_data_t)Qundef)
++    if (ret) {
+ 	rb_raise(rb_eRuntimeError, "hash modified during iteration");
+     }
+     return Qnil;
+@@ -395,7 +498,7 @@ rb_hash_foreach(VALUE hash, int (*func)(ANYARGS), VALUE farg)
+ {
+     struct hash_foreach_arg arg;
+ 
+-    if (!RHASH(hash)->ntbl)
++    if (!RHASH(hash)->ntbl && !RHASH(hash)->ltbl)
+         return;
+     RHASH_ITER_LEV(hash)++;
+     arg.hash = hash;
+diff --git a/internal.h b/internal.h
+index b555bbab06..4973f6a0bf 100644
+--- a/internal.h
++++ b/internal.h
+@@ -670,9 +670,24 @@ struct RComplex {
+ #define RCOMPLEX_SET_IMAG(cmp, i) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->imag,(i))
+ #endif
+ 
++#define LINEAR_TABLE_MAX_SIZE 8
++#define LINEAR_TABLE_BOUND LINEAR_TABLE_MAX_SIZE
++
++typedef struct li_table_entry {
++    VALUE hash;
++    VALUE key;
++    VALUE record;
++} li_table_entry;
++
++typedef struct LinearTable {
++    const struct st_hash_type *type;
++    li_table_entry entries[LINEAR_TABLE_MAX_SIZE];
++} li_table;
++
+ struct RHash {
+     struct RBasic basic;
+     struct st_table *ntbl;      /* possibly 0 */
++    struct LinearTable *ltbl;
+     int iter_lev;
+     const VALUE ifnone;
+ };
+-- 
+2.11.0
+
