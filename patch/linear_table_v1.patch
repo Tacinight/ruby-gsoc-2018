@@ -1,17 +1,18 @@
-From 53f0553d51338c68c3f8ca815d3bba3caacd098e Mon Sep 17 00:00:00 2001
+From 79bff66150accf93d7fb72a0fa6fb69dd3fb86ac Mon Sep 17 00:00:00 2001
 From: tacinight <tacingiht@gmail.com>
-Date: Sat, 21 Jul 2018 14:46:39 +0800
+Date: Wed, 25 Jul 2018 11:17:51 +0800
 Subject: [PATCH] introduce LinearTable for small hash
 
 Signed-off-by: tacinight <tacingiht@gmail.com>
 ---
  gc.c                   |  14 +
- hash.c                 | 868 +++++++++++++++++++++++++++++++++++++++++++------
- internal.h             |  29 +-
- st.c                   | 115 ++++++-
+ hash.c                 | 923 +++++++++++++++++++++++++++++++++++++++++++------
+ include/ruby/st.h      |   2 +-
+ internal.h             |  22 +-
+ st.c                   |  20 +-
  test/ruby/test_time.rb |   1 +
  thread.c               |   8 +-
- 6 files changed, 920 insertions(+), 115 deletions(-)
+ 7 files changed, 867 insertions(+), 123 deletions(-)
 
 diff --git a/gc.c b/gc.c
 index ba1bbbfe08..ccb9abc670 100644
@@ -60,7 +61,7 @@ index ba1bbbfe08..ccb9abc670 100644
  	gc_mark(objspace, any->as.hash.ifnone);
  	break;
 diff --git a/hash.c b/hash.c
-index 48fbe1f37c..95a082d852 100644
+index 48fbe1f37c..843209f670 100644
 --- a/hash.c
 +++ b/hash.c
 @@ -21,6 +21,7 @@
@@ -71,7 +72,7 @@ index 48fbe1f37c..95a082d852 100644
  #ifdef __APPLE__
  # ifdef HAVE_CRT_EXTERNS_H
  #  include <crt_externs.h>
-@@ -299,6 +300,437 @@ static const struct st_hash_type identhash = {
+@@ -299,6 +300,448 @@ static const struct st_hash_type identhash = {
      rb_ident_hash,
  };
  
@@ -81,6 +82,15 @@ index 48fbe1f37c..95a082d852 100644
 +
 +#define RESERVED_HASH_VAL ((st_hash_t) 0)
 +#define RESERVED_HASH_SUBSTITUTION_VAL (~(st_hash_t) 0)
++
++#define HASH_HAS_NO_TABLE(hash) !(RHASH(hash)->ltbl) && !(RHASH(hash)->ntbl)
++#define HASH_HAS_TABLE(hash) RHASH(hash)->ltbl || RHASH(hash)->ntbl
++
++#define SET_KEY(entry, _key) (entry)->key = (_key)
++#define SET_HASH(entry, _hash) (entry)->hash = (_hash)
++#define SET_RECORD(entry, _value) (entry)->record = (_value)
++
++#define RHASH_TYPE(hash) (RHASH(hash)->ltbl ? RHASH(hash)->ltbl->type : RHASH(hash)->ntbl->type)
 +
 +typedef st_data_t st_hash_t;
 +
@@ -95,17 +105,17 @@ index 48fbe1f37c..95a082d852 100644
 +static inline void
 +set_entry(li_table_entry *entry, st_data_t key, st_data_t val, st_hash_t hash)
 +{
-+    entry->key = key;
-+    entry->hash = hash;
-+    entry->record = val;
++    SET_HASH(entry, hash);
++    SET_KEY(entry, key);
++    SET_RECORD(entry, val);
 +}
 +
 +static inline void
 +clear_entry(li_table_entry* entry)
 +{
-+    entry->key = Qundef;
-+    entry->record = Qundef;
-+    entry->hash = 0;
++    SET_KEY(entry, Qundef);
++    SET_RECORD(entry, Qundef);
++    SET_HASH(entry, 0);
 +}
 +
 +static inline int
@@ -118,10 +128,12 @@ index 48fbe1f37c..95a082d852 100644
 +init_linear_table(const struct st_hash_type *type)
 +{
 +    li_table *tab;
++    size_t i;
 +    tab = (li_table*)malloc(sizeof(li_table));
 +    tab->type = type;
 +    tab->num_entries = 0;
-+    memset(tab->entries, 0, 8 * sizeof(li_table_entry));
++    for (i = 0; i < LINEAR_TABLE_BOUND; i++)
++	clear_entry(tab->entries + i);
 +    return tab;
 +}
 +
@@ -509,7 +521,7 @@ index 48fbe1f37c..95a082d852 100644
  typedef int st_foreach_func(st_data_t, st_data_t, st_data_t);
  
  struct foreach_safe_arg {
-@@ -330,7 +762,7 @@ st_foreach_safe(st_table *table, int (*func)(ANYARGS), st_data_t a)
+@@ -330,7 +773,7 @@ st_foreach_safe(st_table *table, int (*func)(ANYARGS), st_data_t a)
      arg.func = (st_foreach_func *)func;
      arg.arg = a;
      if (st_foreach_check(table, foreach_safe_i, (st_data_t)&arg, 0)) {
@@ -518,7 +530,7 @@ index 48fbe1f37c..95a082d852 100644
      }
  }
  
-@@ -343,6 +775,30 @@ struct hash_foreach_arg {
+@@ -343,6 +786,30 @@ struct hash_foreach_arg {
  };
  
  static int
@@ -549,7 +561,7 @@ index 48fbe1f37c..95a082d852 100644
  hash_foreach_iter(st_data_t key, st_data_t value, st_data_t argp, int error)
  {
      struct hash_foreach_arg *arg = (struct hash_foreach_arg *)argp;
-@@ -384,8 +840,15 @@ static VALUE
+@@ -384,8 +851,15 @@ static VALUE
  hash_foreach_call(VALUE arg)
  {
      VALUE hash = ((struct hash_foreach_arg *)arg)->hash;
@@ -567,7 +579,7 @@ index 48fbe1f37c..95a082d852 100644
      }
      return Qnil;
  }
-@@ -395,7 +858,7 @@ rb_hash_foreach(VALUE hash, int (*func)(ANYARGS), VALUE farg)
+@@ -395,7 +869,7 @@ rb_hash_foreach(VALUE hash, int (*func)(ANYARGS), VALUE farg)
  {
      struct hash_foreach_arg arg;
  
@@ -576,7 +588,7 @@ index 48fbe1f37c..95a082d852 100644
          return;
      RHASH_ITER_LEV(hash)++;
      arg.hash = hash;
-@@ -447,8 +910,12 @@ MJIT_FUNC_EXPORTED VALUE
+@@ -447,8 +921,12 @@ MJIT_FUNC_EXPORTED VALUE
  rb_hash_new_with_size(st_index_t size)
  {
      VALUE ret = rb_hash_new();
@@ -591,7 +603,7 @@ index 48fbe1f37c..95a082d852 100644
      return ret;
  }
  
-@@ -457,8 +924,12 @@ hash_dup(VALUE hash, VALUE klass, VALUE flags)
+@@ -457,8 +935,12 @@ hash_dup(VALUE hash, VALUE klass, VALUE flags)
  {
      VALUE ret = hash_alloc_flags(klass, flags,
  				 RHASH_IFNONE(hash));
@@ -606,7 +618,7 @@ index 48fbe1f37c..95a082d852 100644
      return ret;
  }
  
-@@ -479,6 +950,15 @@ rb_hash_modify_check(VALUE hash)
+@@ -479,6 +961,15 @@ rb_hash_modify_check(VALUE hash)
      rb_check_frozen(hash);
  }
  
@@ -622,7 +634,7 @@ index 48fbe1f37c..95a082d852 100644
  static struct st_table *
  hash_tbl(VALUE hash)
  {
-@@ -492,12 +972,14 @@ struct st_table *
+@@ -492,12 +983,14 @@ struct st_table *
  rb_hash_tbl(VALUE hash)
  {
      OBJ_WB_UNPROTECT(hash);
@@ -637,17 +649,17 @@ index 48fbe1f37c..95a082d852 100644
      return hash_tbl(hash);
  }
  
-@@ -505,7 +987,8 @@ static void
+@@ -505,7 +998,8 @@ static void
  rb_hash_modify(VALUE hash)
  {
      rb_hash_modify_check(hash);
 -    hash_tbl(hash);
-+    if (!RHASH(hash)->ltbl && !RHASH(hash)->ntbl)
++    if (HASH_HAS_NO_TABLE(hash))
 +        hash_ltbl(hash);
  }
  
  NORETURN(static void no_new_key(void));
-@@ -558,7 +1041,15 @@ tbl_update(VALUE hash, VALUE key, tbl_update_func func, st_data_t optional_arg)
+@@ -558,7 +1052,15 @@ tbl_update(VALUE hash, VALUE key, tbl_update_func func, st_data_t optional_arg)
      arg.new_value = 0;
      arg.old_value = Qundef;
  
@@ -664,7 +676,7 @@ index 48fbe1f37c..95a082d852 100644
  
      /* write barrier */
      if (arg.new_key)   RB_OBJ_WRITTEN(hash, arg.old_key, arg.new_key);
-@@ -673,10 +1164,13 @@ rb_hash_s_create(int argc, VALUE *argv, VALUE klass)
+@@ -673,10 +1175,13 @@ rb_hash_s_create(int argc, VALUE *argv, VALUE klass)
      VALUE hash, tmp;
  
      if (argc == 1) {
@@ -680,7 +692,7 @@ index 48fbe1f37c..95a082d852 100644
  		RHASH(hash)->ntbl = st_copy(RHASH(tmp)->ntbl);
  	    }
  	    return hash;
-@@ -765,6 +1259,15 @@ struct rehash_arg {
+@@ -765,6 +1270,15 @@ struct rehash_arg {
  };
  
  static int
@@ -696,7 +708,7 @@ index 48fbe1f37c..95a082d852 100644
  rb_hash_rehash_i(VALUE key, VALUE value, VALUE arg)
  {
      st_table *tbl = (st_table *)arg;
-@@ -798,22 +1301,32 @@ rb_hash_rehash(VALUE hash)
+@@ -798,22 +1312,32 @@ rb_hash_rehash(VALUE hash)
  {
      VALUE tmp;
      st_table *tbl;
@@ -740,7 +752,7 @@ index 48fbe1f37c..95a082d852 100644
      return hash;
  }
  
-@@ -850,10 +1363,13 @@ rb_hash_aref(VALUE hash, VALUE key)
+@@ -850,10 +1374,13 @@ rb_hash_aref(VALUE hash, VALUE key)
  {
      st_data_t val;
  
@@ -748,16 +760,16 @@ index 48fbe1f37c..95a082d852 100644
 -	return rb_hash_default_value(hash, key);
 +    if (RHASH(hash)->ltbl && linear_lookup(RHASH(hash)->ltbl, key, &val)) {
 +	return (VALUE)val;
-+    }
-+    else if (RHASH(hash)->ntbl && st_lookup(RHASH(hash)->ntbl, key, &val)) {
-+	return (VALUE)val;
      }
 -    return (VALUE)val;
++    else if (RHASH(hash)->ntbl && st_lookup(RHASH(hash)->ntbl, key, &val)) {
++	return (VALUE)val;
++    }
 +    return rb_hash_default_value(hash, key);
  }
  
  VALUE
-@@ -861,10 +1377,13 @@ rb_hash_lookup2(VALUE hash, VALUE key, VALUE def)
+@@ -861,10 +1388,13 @@ rb_hash_lookup2(VALUE hash, VALUE key, VALUE def)
  {
      st_data_t val;
  
@@ -774,7 +786,7 @@ index 48fbe1f37c..95a082d852 100644
  }
  
  VALUE
-@@ -916,19 +1435,22 @@ rb_hash_fetch_m(int argc, VALUE *argv, VALUE hash)
+@@ -916,19 +1446,22 @@ rb_hash_fetch_m(int argc, VALUE *argv, VALUE hash)
      if (block_given && argc == 2) {
  	rb_warn("block supersedes default value argument");
      }
@@ -808,7 +820,7 @@ index 48fbe1f37c..95a082d852 100644
  }
  
  VALUE
-@@ -1117,10 +1639,10 @@ rb_hash_delete_entry(VALUE hash, VALUE key)
+@@ -1117,10 +1650,10 @@ rb_hash_delete_entry(VALUE hash, VALUE key)
  {
      st_data_t ktmp = (st_data_t)key, val;
  
@@ -822,7 +834,7 @@ index 48fbe1f37c..95a082d852 100644
  	return (VALUE)val;
      }
      else {
-@@ -1219,6 +1741,21 @@ rb_hash_shift(VALUE hash)
+@@ -1219,6 +1752,21 @@ rb_hash_shift(VALUE hash)
      struct shift_var var;
  
      rb_hash_modify_check(hash);
@@ -844,25 +856,25 @@ index 48fbe1f37c..95a082d852 100644
      if (RHASH(hash)->ntbl) {
  	var.key = Qundef;
  	if (RHASH_ITER_LEV(hash) == 0) {
-@@ -1272,7 +1809,7 @@ rb_hash_delete_if(VALUE hash)
+@@ -1272,7 +1820,7 @@ rb_hash_delete_if(VALUE hash)
  {
      RETURN_SIZED_ENUMERATOR(hash, 0, 0, hash_enum_size);
      rb_hash_modify_check(hash);
 -    if (RHASH(hash)->ntbl)
-+    if (RHASH(hash)->ltbl || RHASH(hash)->ntbl)
++    if (HASH_HAS_TABLE(hash))
  	rb_hash_foreach(hash, delete_if_i, hash);
      return hash;
  }
-@@ -1296,7 +1833,7 @@ rb_hash_reject_bang(VALUE hash)
+@@ -1296,7 +1844,7 @@ rb_hash_reject_bang(VALUE hash)
      n = RHASH_SIZE(hash);
      if (!n) return Qnil;
      rb_hash_foreach(hash, delete_if_i, hash);
 -    if (n == RHASH(hash)->ntbl->num_entries) return Qnil;
-+    if (n == RHASH_SIZE(hash)) return Qnil;  //TODO: header RHASH_SIZE
++    if (n == RHASH_SIZE(hash)) return Qnil;
      return hash;
  }
  
-@@ -1486,11 +2023,10 @@ rb_hash_select_bang(VALUE hash)
+@@ -1486,11 +2034,10 @@ rb_hash_select_bang(VALUE hash)
  
      RETURN_SIZED_ENUMERATOR(hash, 0, 0, hash_enum_size);
      rb_hash_modify_check(hash);
@@ -877,16 +889,16 @@ index 48fbe1f37c..95a082d852 100644
      return hash;
  }
  
-@@ -1511,7 +2047,7 @@ rb_hash_keep_if(VALUE hash)
+@@ -1511,7 +2058,7 @@ rb_hash_keep_if(VALUE hash)
  {
      RETURN_SIZED_ENUMERATOR(hash, 0, 0, hash_enum_size);
      rb_hash_modify_check(hash);
 -    if (RHASH(hash)->ntbl)
-+    if (RHASH(hash)->ltbl || RHASH(hash)->ntbl)
++    if (HASH_HAS_TABLE(hash))
  	rb_hash_foreach(hash, keep_if_i, hash);
      return hash;
  }
-@@ -1537,9 +2073,13 @@ VALUE
+@@ -1537,9 +2084,13 @@ VALUE
  rb_hash_clear(VALUE hash)
  {
      rb_hash_modify_check(hash);
@@ -903,7 +915,7 @@ index 48fbe1f37c..95a082d852 100644
  	if (RHASH_ITER_LEV(hash) > 0)
  	    rb_hash_foreach(hash, clear_i, 0);
  	else
-@@ -1640,14 +2180,19 @@ VALUE
+@@ -1640,14 +2191,15 @@ VALUE
  rb_hash_aset(VALUE hash, VALUE key, VALUE val)
  {
      int iter_lev = RHASH_ITER_LEV(hash);
@@ -912,23 +924,18 @@ index 48fbe1f37c..95a082d852 100644
  
      rb_hash_modify(hash);
 -    if (!tbl) {
-+    if (!RHASH(hash)->ltbl && !RHASH(hash)->ntbl) {
++    if (HASH_HAS_NO_TABLE(hash)) {
  	if (iter_lev > 0) no_new_key();
 -	tbl = hash_tbl(hash);
--    }
--    if (tbl->type == &identhash || rb_obj_class(key) != rb_cString) {
 +	RHASH(hash)->ltbl = init_linear_objtable();
-+    }
-+    try_convert_table(hash);
-+    if (RHASH(hash)->ltbl)
-+        type = RHASH(hash)->ltbl->type;
-+    else if (RHASH(hash)->ntbl)
-+        type = RHASH(hash)->ntbl->type;
+     }
+-    if (tbl->type == &identhash || rb_obj_class(key) != rb_cString) {
++    type = RHASH_TYPE(hash);
 +    if (type == &identhash || rb_obj_class(key) != rb_cString) {
  	RHASH_UPDATE_ITER(hash, iter_lev, key, hash_aset, val);
      }
      else {
-@@ -1669,6 +2214,7 @@ static VALUE
+@@ -1669,6 +2221,7 @@ static VALUE
  rb_hash_initialize_copy(VALUE hash, VALUE hash2)
  {
      st_table *ntbl;
@@ -936,7 +943,7 @@ index 48fbe1f37c..95a082d852 100644
  
      rb_hash_modify_check(hash);
      hash2 = to_hash(hash2);
-@@ -1677,13 +2223,23 @@ rb_hash_initialize_copy(VALUE hash, VALUE hash2)
+@@ -1677,13 +2230,23 @@ rb_hash_initialize_copy(VALUE hash, VALUE hash2)
  
      if (hash == hash2) return hash;
  
@@ -961,7 +968,7 @@ index 48fbe1f37c..95a082d852 100644
      else if (ntbl) {
  	st_clear(ntbl);
      }
-@@ -1708,18 +2264,20 @@ rb_hash_initialize_copy(VALUE hash, VALUE hash2)
+@@ -1708,18 +2271,20 @@ rb_hash_initialize_copy(VALUE hash, VALUE hash2)
  static VALUE
  rb_hash_replace(VALUE hash, VALUE hash2)
  {
@@ -987,25 +994,25 @@ index 48fbe1f37c..95a082d852 100644
      rb_hash_foreach(hash2, replace_i, hash);
  
      return hash;
-@@ -1941,7 +2499,7 @@ rb_hash_transform_keys_bang(VALUE hash)
+@@ -1941,7 +2506,7 @@ rb_hash_transform_keys_bang(VALUE hash)
  {
      RETURN_SIZED_ENUMERATOR(hash, 0, 0, hash_enum_size);
      rb_hash_modify_check(hash);
 -    if (RHASH(hash)->ntbl) {
-+    if (RHASH(hash)->ltbl || RHASH(hash)->ntbl) {
++    if (HASH_HAS_TABLE(hash)) {
          long i;
          VALUE pairs = rb_hash_flatten(0, NULL, hash);
          rb_hash_clear(hash);
-@@ -2015,7 +2573,7 @@ rb_hash_transform_values_bang(VALUE hash)
+@@ -2015,7 +2580,7 @@ rb_hash_transform_values_bang(VALUE hash)
  {
      RETURN_SIZED_ENUMERATOR(hash, 0, 0, hash_enum_size);
      rb_hash_modify_check(hash);
 -    if (RHASH(hash)->ntbl)
-+    if (RHASH(hash)->ltbl || RHASH(hash)->ntbl)
++    if (HASH_HAS_TABLE(hash))
          rb_hash_foreach(hash, transform_values_i, hash);
      return hash;
  }
-@@ -2165,12 +2723,22 @@ rb_hash_keys(VALUE hash)
+@@ -2165,12 +2730,22 @@ rb_hash_keys(VALUE hash)
      if (size == 0) return keys;
  
      if (ST_DATA_COMPATIBLE_P(VALUE)) {
@@ -1033,7 +1040,7 @@ index 48fbe1f37c..95a082d852 100644
  	rb_ary_set_len(keys, size);
      }
      else {
-@@ -2209,12 +2777,22 @@ rb_hash_values(VALUE hash)
+@@ -2209,12 +2784,22 @@ rb_hash_values(VALUE hash)
      if (size == 0) return values;
  
      if (ST_DATA_COMPATIBLE_P(VALUE)) {
@@ -1061,7 +1068,7 @@ index 48fbe1f37c..95a082d852 100644
  	rb_ary_set_len(values, size);
      }
      else {
-@@ -2246,9 +2824,10 @@ rb_hash_values(VALUE hash)
+@@ -2246,9 +2831,10 @@ rb_hash_values(VALUE hash)
  MJIT_FUNC_EXPORTED VALUE
  rb_hash_has_key(VALUE hash, VALUE key)
  {
@@ -1075,7 +1082,7 @@ index 48fbe1f37c..95a082d852 100644
  	return Qtrue;
      }
      return Qfalse;
-@@ -2313,6 +2892,42 @@ eql_i(VALUE key, VALUE val1, VALUE arg)
+@@ -2313,6 +2899,42 @@ eql_i(VALUE key, VALUE val1, VALUE arg)
      return ST_CONTINUE;
  }
  
@@ -1118,7 +1125,7 @@ index 48fbe1f37c..95a082d852 100644
  static VALUE
  recursive_eql(VALUE hash, VALUE dt, int recur)
  {
-@@ -2330,6 +2945,7 @@ static VALUE
+@@ -2330,6 +2952,7 @@ static VALUE
  hash_equal(VALUE hash1, VALUE hash2, int eql)
  {
      struct equal_data data;
@@ -1126,7 +1133,7 @@ index 48fbe1f37c..95a082d852 100644
  
      if (hash1 == hash2) return Qtrue;
      if (!RB_TYPE_P(hash2, T_HASH)) {
-@@ -2350,19 +2966,28 @@ hash_equal(VALUE hash1, VALUE hash2, int eql)
+@@ -2350,19 +2973,28 @@ hash_equal(VALUE hash1, VALUE hash2, int eql)
      }
      if (RHASH_SIZE(hash1) != RHASH_SIZE(hash2))
  	return Qfalse;
@@ -1163,7 +1170,7 @@ index 48fbe1f37c..95a082d852 100644
  }
  
  /*
-@@ -2683,7 +3308,10 @@ static VALUE
+@@ -2683,7 +3315,10 @@ static VALUE
  reset_hash_type(VALUE arg)
  {
      struct reset_hash_type_arg *p = (struct reset_hash_type_arg *)arg;
@@ -1175,7 +1182,7 @@ index 48fbe1f37c..95a082d852 100644
      return Qundef;
  }
  
-@@ -2717,12 +3345,19 @@ VALUE
+@@ -2717,12 +3352,19 @@ VALUE
  rb_hash_assoc(VALUE hash, VALUE key)
  {
      st_table *table;
@@ -1197,7 +1204,7 @@ index 48fbe1f37c..95a082d852 100644
  
      if (orighash != &identhash) {
  	VALUE value;
-@@ -2731,7 +3366,10 @@ rb_hash_assoc(VALUE hash, VALUE key)
+@@ -2731,7 +3373,10 @@ rb_hash_assoc(VALUE hash, VALUE key)
  
  	assochash.compare = assoc_cmp;
  	assochash.hash = orighash->hash;
@@ -1209,7 +1216,7 @@ index 48fbe1f37c..95a082d852 100644
  	args[0] = hash;
  	args[1] = key;
  	ensure_arg.hash = hash;
-@@ -2898,11 +3536,12 @@ rb_hash_compact(VALUE hash)
+@@ -2898,11 +3543,12 @@ rb_hash_compact(VALUE hash)
  static VALUE
  rb_hash_compact_bang(VALUE hash)
  {
@@ -1225,7 +1232,7 @@ index 48fbe1f37c..95a082d852 100644
  	    return hash;
      }
      return Qnil;
-@@ -2927,15 +3566,24 @@ rb_hash_compact_bang(VALUE hash)
+@@ -2927,15 +3573,24 @@ rb_hash_compact_bang(VALUE hash)
  static VALUE
  rb_hash_compare_by_id(VALUE hash)
  {
@@ -1255,7 +1262,7 @@ index 48fbe1f37c..95a082d852 100644
  
      return hash;
  }
-@@ -2952,9 +3600,10 @@ rb_hash_compare_by_id(VALUE hash)
+@@ -2952,9 +3607,10 @@ rb_hash_compare_by_id(VALUE hash)
  MJIT_FUNC_EXPORTED VALUE
  rb_hash_compare_by_id_p(VALUE hash)
  {
@@ -1269,7 +1276,7 @@ index 48fbe1f37c..95a082d852 100644
  	return Qtrue;
      }
      return Qfalse;
-@@ -3221,13 +3870,24 @@ add_new_i(st_data_t *key, st_data_t *val, st_data_t arg, int existing)
+@@ -3221,13 +3877,74 @@ add_new_i(st_data_t *key, st_data_t *val, st_data_t arg, int existing)
   * returns non-zero if +key+ was contained.
   */
  int
@@ -1293,14 +1300,77 @@ index 48fbe1f37c..95a082d852 100644
 +    tbl = rb_hash_tbl_raw(hash);
      return st_update(tbl, (st_data_t)key, add_new_i, (st_data_t)args);
 +
++}
++
++static st_data_t
++linear_stringify(VALUE key)
++{
++    return (rb_obj_class(key) == rb_cString && !RB_OBJ_FROZEN(key)) ?
++        rb_hash_key_str(key) : key;
++}
++
++static void
++linear_bulk_insert(li_table *tab, long argc, const VALUE *argv, VALUE hash)
++{
++    long i;
++    for (i = 0; i < argc; ) {
++	st_data_t k = linear_stringify(argv[i++]);
++	st_data_t v = argv[i++];
++	linear_insert(tab, k, v);
++	RB_OBJ_WRITTEN(hash, Qundef, k);
++	RB_OBJ_WRITTEN(hash, Qundef, v);
++    }
++}
++
++MJIT_FUNC_EXPORTED void
++rb_hash_bulk_insert(long argc, const VALUE *argv, VALUE hash)
++{
++    st_index_t size;
++    li_table *ltbl = RHASH(hash)->ltbl;
++
++    assert(argc % 2 == 0);
++    if (! argc)
++        return;
++    size = argc / 2;
++    if (HASH_HAS_NO_TABLE(hash)) {
++        VALUE tmp = rb_hash_new_with_size(size);
++        RBASIC_CLEAR_CLASS(tmp);
++	if (size <= LINEAR_TABLE_MAX_SIZE) {
++	    RHASH(hash)->ltbl = ltbl = RHASH(tmp)->ltbl;
++	    RHASH(tmp)->ltbl = NULL;
++	}
++	else {
++            RHASH(hash)->ntbl = RHASH(tmp)->ntbl;
++            RHASH(tmp)->ntbl = NULL;
++	}
++    }
++    if (ltbl && (ltbl->num_entries + size <= LINEAR_TABLE_MAX_SIZE)) {
++	linear_bulk_insert(ltbl, argc, argv, hash);
++	return;
++    }
++
++    rb_hash_bulk_insert_into_st_table(argc, argv, hash);
  }
  
  static int path_tainted = -1;
+diff --git a/include/ruby/st.h b/include/ruby/st.h
+index ede3ff4456..149e0ebaef 100644
+--- a/include/ruby/st.h
++++ b/include/ruby/st.h
+@@ -143,7 +143,7 @@ CONSTFUNC(st_index_t st_hash_end(st_index_t h));
+ CONSTFUNC(st_index_t st_hash_start(st_index_t h));
+ #define st_hash_start(h) ((st_index_t)(h))
+ 
+-void rb_hash_bulk_insert(long, const VALUE *, VALUE);
++void rb_hash_bulk_insert_into_st_table(long, const VALUE *, VALUE);
+ 
+ RUBY_SYMBOL_EXPORT_END
+ 
 diff --git a/internal.h b/internal.h
-index 45c499d869..aa51291cd1 100644
+index 45c499d869..443dfc3fc2 100644
 --- a/internal.h
 +++ b/internal.h
-@@ -670,9 +670,33 @@ struct RComplex {
+@@ -670,9 +670,25 @@ struct RComplex {
  #define RCOMPLEX_SET_IMAG(cmp, i) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->imag,(i))
  #endif
  
@@ -1319,14 +1389,6 @@ index 45c499d869..aa51291cd1 100644
 +    li_table_entry entries[LINEAR_TABLE_MAX_SIZE];
 +} li_table;
 +
-+typedef struct HashTable {
-+    uint8_t flag;
-+    union {
-+	struct st_table *ntbl;
-+	struct LinearTable *ltbl;
-+    } tbl;
-+} ht_table;
-+
  struct RHash {
      struct RBasic basic;
      struct st_table *ntbl;      /* possibly 0 */
@@ -1334,159 +1396,55 @@ index 45c499d869..aa51291cd1 100644
      int iter_lev;
      const VALUE ifnone;
  };
-@@ -685,7 +709,8 @@ struct RHash {
+@@ -685,7 +701,8 @@ struct RHash {
  #undef RHASH_SIZE
  #define RHASH_ITER_LEV(h) (RHASH(h)->iter_lev)
  #define RHASH_IFNONE(h) (RHASH(h)->ifnone)
 -#define RHASH_SIZE(h) (RHASH(h)->ntbl ? RHASH(h)->ntbl->num_entries : (st_index_t)0)
-+#define RHASH_SIZE(h) (RHASH(h)->ltbl ? RHASH(h)->ltbl->num_entries \
-+			: (RHASH(h)->ntbl ? RHASH(h)->ntbl->num_entries : (st_index_t)0))
++#define RHASH_SIZE_NTBL(h) (RHASH(h)->ntbl ? RHASH(h)->ntbl->num_entries : (st_index_t)0)
++#define RHASH_SIZE(h) (RHASH(h)->ltbl ? RHASH(h)->ltbl->num_entries : RHASH_SIZE_NTBL(h))
  #endif
  
  /* missing/setproctitle.c */
-@@ -1356,6 +1381,8 @@ VALUE rb_hash_keys(VALUE hash);
+@@ -1356,6 +1373,9 @@ VALUE rb_hash_keys(VALUE hash);
  VALUE rb_hash_values(VALUE hash);
  VALUE rb_hash_rehash(VALUE hash);
  int rb_hash_add_new_element(VALUE hash, VALUE key, VALUE val);
 +int linear_foreach(li_table *, int (*)(ANYARGS), st_data_t);
 +int linear_lookup(li_table *, st_data_t, st_data_t *);
++void rb_hash_bulk_insert(long, const VALUE *, VALUE);
  #define HASH_PROC_DEFAULT FL_USER2
  
  /* inits.c */
 diff --git a/st.c b/st.c
-index 1a47525707..4cea730f5b 100644
+index 1a47525707..650694f182 100644
 --- a/st.c
 +++ b/st.c
-@@ -2236,6 +2236,94 @@ st_stringify(VALUE key)
-         rb_hash_key_str(key) : key;
+@@ -2281,24 +2281,16 @@ st_insert_generic(st_table *tab, long argc, const VALUE *argv, VALUE hash)
+     st_rehash(tab);
  }
  
-+static inline st_hash_t
-+li_do_hash(st_data_t key, li_table *tab)
-+{
-+    st_hash_t hash = (st_hash_t)(tab->type->hash)(key);
-+
-+    return hash == ((st_hash_t) 0) ? (~(st_hash_t) 0) : hash;
-+}
-+
-+static int
-+li_compact_table(li_table *tab)
-+{
-+    li_table_entry *entries;
-+    size_t empty = 0, non_empty = 1;
-+
-+    entries = tab->entries;
-+    for (; non_empty < LINEAR_TABLE_BOUND; empty++, non_empty++) {
-+	while (entries[empty].hash != 0) {
-+	    empty++;
-+	    if (empty == LINEAR_TABLE_BOUND - 1) goto done;
-+	}
-+
-+	if (non_empty <= empty) non_empty = empty + 1;
-+	while (entries[non_empty].hash == 0) {
-+	    non_empty++;
-+	    if (non_empty == LINEAR_TABLE_BOUND) goto done;
-+	}
-+
-+	entries[empty] = entries[non_empty];
-+	entries[non_empty].key = 0;
-+	entries[non_empty].record = 0;
-+	entries[non_empty].hash = 0;
-+    }
-+done:
-+    assert(empty < LINEAR_TABLE_BOUND);
-+    return empty;
-+}
-+
-+static st_index_t
-+li_find_entry(li_table *tab, st_hash_t hash_value, st_data_t key)
-+{
-+    size_t i;
-+    li_table_entry *entries;
-+
-+    entries = tab->entries;
-+    for (i = 0; i < LINEAR_TABLE_BOUND; i++) {
-+	if (PTR_EQUAL(tab, &entries[i], hash_value, key))
-+	      return i;
-+    }
-+    return LINEAR_TABLE_BOUND;
-+}
-+
-+static int
-+li_insert_single(li_table *tab, st_data_t key, st_data_t value)
-+{
-+    st_index_t bin;
-+    st_hash_t hash_value;
-+    li_table_entry *cur_entry;
-+
-+    hash_value = li_do_hash(key, tab);
-+    bin = li_find_entry(tab, hash_value, key);
-+    if (bin == LINEAR_TABLE_BOUND) {
-+	assert(tab->num_entries < LINEAR_TABLE_MAX_SIZE);
-+	bin = li_compact_table(tab);
-+	assert(bin < LINEAR_TABLE_BOUND);
-+	cur_entry = &tab->entries[bin];
-+	cur_entry->key = key;
-+	cur_entry->record = value;
-+	cur_entry->hash = hash_value;
-+	tab->num_entries++;
-+	return 0;
-+    }
-+    tab->entries[bin].record = value;
-+    return 1;
-+}
-+
-+static void
-+li_bulk_insert(li_table *tab, long argc, const VALUE *argv, VALUE hash)
-+{
-+    long i;
-+    for (i = 0; i < argc; ) {
-+	st_data_t k = st_stringify(argv[i++]);
-+	st_data_t v = argv[i++];
-+	li_insert_single(tab, k, v);
-+	RB_OBJ_WRITTEN(hash, Qundef, k);
-+	RB_OBJ_WRITTEN(hash, Qundef, v);
-+    }
-+}
-+
- static void
- st_insert_single(st_table *tab, VALUE hash, VALUE key, VALUE val)
- {
-@@ -2286,19 +2374,34 @@ st_insert_generic(st_table *tab, long argc, const VALUE *argv, VALUE hash)
+-/* Mimics ruby's { foo => bar } syntax. This function is placed here
+-   because it touches table internals and write barriers at once. */
++/* Mimics ruby's { foo => bar } syntax. This function is subpart 
++   of rb_hash_bulk_insert. */
  void
- rb_hash_bulk_insert(long argc, const VALUE *argv, VALUE hash)
+-rb_hash_bulk_insert(long argc, const VALUE *argv, VALUE hash)
++rb_hash_bulk_insert_into_st_table(long argc, const VALUE *argv, VALUE hash)
  {
 -    st_index_t n;
-+    st_index_t n, size;
++    st_index_t n, size = argc / 2;
      st_table *tab = RHASH(hash)->ntbl;
-+    li_table *ltbl = RHASH(hash)->ltbl;
  
-     st_assert(argc % 2 == 0);
-     if (! argc)
-         return;
+-    st_assert(argc % 2 == 0);
+-    if (! argc)
+-        return;
 -    if (! tab) {
 -        VALUE tmp = rb_hash_new_with_size(argc / 2);
-+    size = argc / 2;
-+    if (!ltbl && !tab) {
-+        VALUE tmp = rb_hash_new_with_size(size);
-         RBASIC_CLEAR_CLASS(tmp);
+-        RBASIC_CLEAR_CLASS(tmp);
 -        RHASH(hash)->ntbl = tab = RHASH(tmp)->ntbl;
 -        RHASH(tmp)->ntbl = NULL;
-+	if (size <= LINEAR_TABLE_MAX_SIZE) {
-+	    RHASH(hash)->ltbl = ltbl = RHASH(tmp)->ltbl;
-+	    RHASH(tmp)->ltbl = NULL;
-+	}
-+	else {
-+            RHASH(hash)->ntbl = tab = RHASH(tmp)->ntbl;
-+            RHASH(tmp)->ntbl = NULL;
-+	}
-+    }
-+    if (ltbl) {
-+	if (ltbl->num_entries + size <= LINEAR_TABLE_MAX_SIZE) {
-+	    li_bulk_insert(ltbl, argc, argv, hash);
-+	    return;
-+	}
-     }
+-    }
 -    n = tab->num_entries + argc / 2;
 +    tab = rb_hash_tbl_raw(hash);
 +    n = tab->num_entries + size;
@@ -1506,7 +1464,7 @@ index 50ac569c4e..0aac07b05d 100644
        flunk "Unsupported RVALUE_SIZE=#{size}, update test_memsize"
      end
 diff --git a/thread.c b/thread.c
-index 3943cf0fc6..0395d0fffb 100644
+index 6181a75ae6..3cf43fab43 100644
 --- a/thread.c
 +++ b/thread.c
 @@ -3506,10 +3506,10 @@ rb_thread_variable_p(VALUE thread, VALUE key)
