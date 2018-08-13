@@ -1,0 +1,409 @@
+`/home/evan/Repository/ruby/ruby  ./benchmark/bm_bighash.rb' exited with abnormal status (pid 19545 exit 1)
+
+-----------------------------------------------------------
+benchmark results:
+Execution time (sec)
+name	v1	v2
+app_answer	0.071	0.075
+app_aobench	34.905	36.888
+app_erb	0.929	1.009
+app_factorial	0.692	0.686
+app_fib	0.367	0.369
+app_lc_fizzbuzz	30.498	27.669
+app_mandelbrot	0.995	1.002
+app_pentomino	10.493	10.423
+app_raise	0.205	0.219
+app_strconcat	0.838	0.805
+app_tak	0.504	0.511
+app_tarai	0.400	0.405
+app_uri	0.442	0.451
+array_sample_100k_10	0.053	0.059
+array_sample_100k_11	0.059	0.075
+array_sample_100k__100	0.107	0.140
+array_sample_100k__1k	0.473	0.881
+array_sample_100k__6k	1.756	1.710
+array_sample_100k___10k	2.513	2.461
+array_sample_100k___50k	8.798	9.202
+array_shift	4.013	3.975
+array_small_and	0.060	0.070
+array_small_diff	0.069	0.078
+array_small_or	0.075	0.079
+array_sort_block	4.743	4.545
+array_sort_float	1.557	1.599
+array_values_at_int	0.062	0.067
+array_values_at_range	0.362	0.359
+bighash	1.359	0.000
+dir_empty_p	0.376	0.372
+erb_render	1.051	1.042
+file_chmod	0.360	0.372
+file_rename	1.300	1.295
+hash_aref_dsym	0.316	0.325
+hash_aref_dsym_long	4.254	4.597
+hash_aref_fix	0.279	0.313
+hash_aref_flo	0.079	0.085
+hash_aref_miss	0.397	0.419
+hash_aref_str	0.352	0.425
+hash_aref_sym	0.294	0.306
+hash_aref_sym_long	0.449	0.451
+hash_flatten	0.229	0.265
+hash_ident_flo	0.077	0.086
+hash_ident_num	0.296	0.303
+hash_ident_obj	0.291	0.305
+hash_ident_str	0.312	0.317
+hash_ident_sym	0.304	0.307
+hash_keys	0.130	0.219
+hash_long	0.585	0.800
+hash_shift	0.054	0.795
+hash_shift_u16	0.098	26.358
+hash_shift_u24	0.094	26.199
+hash_shift_u32	0.096	26.259
+hash_small2	0.549	0.990
+hash_small4	0.677	1.167
+hash_small8	1.101	1.555
+hash_to_proc	0.053	0.058
+hash_values	0.130	0.227
+int_quo	0.959	0.955
+io_copy_stream_write	0.216	0.219
+io_copy_stream_write_socket	0.415	0.449
+io_file_create	1.347	1.463
+io_file_read	1.130	1.130
+io_file_write	0.790	0.785
+io_nonblock_noex	2.036	2.383
+io_nonblock_noex2	1.545	1.549
+io_pipe_rw	1.113	1.108
+io_select	1.239	1.245
+io_select2	1.552	1.546
+io_select3	0.142	0.179
+loop_for	1.019	1.004
+loop_generator	0.494	0.512
+loop_times	0.888	0.946
+loop_whileloop	0.395	0.404
+loop_whileloop2	0.117	0.124
+marshal_dump_flo	0.275	0.408
+marshal_dump_load_geniv	0.397	0.554
+marshal_dump_load_time	1.333	1.466
+require	2.112	0.982
+require_thread	16.774	2.768
+securerandom	0.222	0.269
+so_ackermann	0.433	0.435
+so_array	0.676	0.720
+so_binary_trees	4.304	4.318
+so_concatenate	2.983	3.018
+so_count_words	0.177	0.180
+so_exception	0.231	0.242
+so_fannkuch	0.874	0.889
+so_fasta	1.280	1.307
+so_k_nucleotide	0.895	1.351
+so_lists	0.404	0.440
+so_mandelbrot	1.816	1.894
+so_matrix	0.442	0.472
+so_meteor_contest	2.290	2.241
+so_nbody	1.029	1.096
+so_nested_loop	0.799	0.810
+so_nsieve	1.303	1.339
+so_nsieve_bits	1.750	1.688
+so_object	0.524	0.532
+so_partial_sums	1.501	1.533
+so_pidigits	0.900	0.843
+so_random	0.479	0.487
+so_reverse_complement	1.206	1.118
+so_sieve	0.405	0.404
+so_spectralnorm	1.347	1.434
+string_index	0.296	0.314
+string_scan_re	0.224	0.209
+string_scan_str	0.160	0.186
+time_subsec	1.003	0.975
+vm1_attr_ivar*	0.557	0.529
+vm1_attr_ivar_set*	0.595	0.624
+vm1_block*	0.949	1.000
+vm1_blockparam*	0.923	0.935
+vm1_blockparam_call*	1.598	1.589
+vm1_blockparam_pass*	2.048	2.064
+vm1_blockparam_yield*	1.512	1.441
+vm1_const*	0.316	0.306
+vm1_ensure*	0.035	0.058
+vm1_float_simple*	3.128	3.091
+vm1_gc_short_lived*	4.105	4.151
+vm1_gc_short_with_complex_long*	4.428	9.260
+vm1_gc_short_with_long*	5.396	4.672
+vm1_gc_short_with_symbol*	4.093	4.187
+vm1_gc_wb_ary*	0.549	0.549
+vm1_gc_wb_ary_promoted*	0.554	0.543
+vm1_gc_wb_obj*	0.457	0.441
+vm1_gc_wb_obj_promoted*	0.516	0.469
+vm1_ivar*	0.294	0.268
+vm1_ivar_set*	0.242	0.290
+vm1_length*	0.428	0.421
+vm1_lvar_init*	1.248	0.996
+vm1_lvar_set*	1.755	1.780
+vm1_neq*	0.453	0.450
+vm1_not*	0.369	0.268
+vm1_rescue*	0.102	0.100
+vm1_simplereturn*	0.479	0.478
+vm1_swap*	0.206	0.187
+vm1_yield*	0.579	0.596
+vm2_array*	0.670	0.675
+vm2_bigarray*	3.559	3.512
+vm2_bighash*	0.408	0.879
+vm2_case*	0.092	0.132
+vm2_case_lit*	0.563	0.810
+vm2_defined_method*	2.402	2.416
+vm2_dstr*	0.851	0.849
+vm2_eval*	21.375	24.525
+vm2_fiber_switch*	4.720	4.815
+vm2_method*	0.769	0.752
+vm2_method_missing*	1.836	1.855
+vm2_method_with_block*	0.834	0.837
+vm2_module_ann_const_set*	4.874	5.155
+vm2_module_const_set*	4.414	5.604
+vm2_mutex*	0.449	0.447
+vm2_newlambda*	0.714	0.714
+vm2_poly_method*	2.017	1.950
+vm2_poly_method_ov*	0.162	0.157
+vm2_poly_singleton*	0.980	0.941
+vm2_proc*	0.184	0.182
+vm2_raise1*	3.386	3.536
+vm2_raise2*	5.720	5.912
+vm2_regexp*	0.880	0.886
+vm2_send*	0.287	0.270
+vm2_string_literal*	0.164	0.169
+vm2_struct_big_aref_hi*	0.148	0.151
+vm2_struct_big_aref_lo*	0.153	0.140
+vm2_struct_big_aset*	0.179	0.175
+vm2_struct_big_href_hi*	0.226	0.227
+vm2_struct_big_href_lo*	0.243	0.234
+vm2_struct_big_hset*	0.243	0.250
+vm2_struct_small_aref*	0.094	0.090
+vm2_struct_small_aset*	0.168	0.165
+vm2_struct_small_href*	0.200	0.202
+vm2_struct_small_hset*	0.211	0.220
+vm2_super*	0.326	0.327
+vm2_unif1*	0.118	0.112
+vm2_zsuper*	0.358	0.353
+vm3_backtrace	0.195	0.204
+vm3_clearmethodcache	0.320	0.376
+vm3_gc	6.243	6.862
+vm3_gc_old_full	2.597	2.642
+vm3_gc_old_immediate	2.656	2.699
+vm3_gc_old_lazy	3.497	3.371
+vm_symbol_block_pass	0.803	0.826
+vm_thread_alive_check1	0.130	0.122
+vm_thread_close	0.670	0.712
+vm_thread_condvar1	0.867	0.847
+vm_thread_condvar2	0.676	0.656
+vm_thread_create_join	0.988	1.008
+vm_thread_mutex1	0.434	0.436
+vm_thread_mutex2	0.432	0.442
+vm_thread_mutex3	0.633	0.680
+vm_thread_pass	0.495	0.305
+vm_thread_pass_flood	0.118	0.133
+vm_thread_pipe	0.423	0.535
+vm_thread_queue	0.133	0.158
+vm_thread_sized_queue	0.228	0.236
+vm_thread_sized_queue2	0.590	0.598
+vm_thread_sized_queue3	0.574	0.592
+vm_thread_sized_queue4	0.274	0.298
+
+Speedup ratio: compare with the result of `v1' (greater is better)
+name	v2
+app_answer	0.939
+app_aobench	0.946
+app_erb	0.920
+app_factorial	1.008
+app_fib	0.993
+app_lc_fizzbuzz	1.102
+app_mandelbrot	0.993
+app_pentomino	1.007
+app_raise	0.937
+app_strconcat	1.041
+app_tak	0.986
+app_tarai	0.988
+app_uri	0.980
+array_sample_100k_10	0.909
+array_sample_100k_11	0.790
+array_sample_100k__100	0.763
+array_sample_100k__1k	0.537
+array_sample_100k__6k	1.027
+array_sample_100k___10k	1.021
+array_sample_100k___50k	0.956
+array_shift	1.010
+array_small_and	0.857
+array_small_diff	0.879
+array_small_or	0.948
+array_sort_block	1.044
+array_sort_float	0.973
+array_values_at_int	0.925
+array_values_at_range	1.007
+bighashError
+dir_empty_p	1.011
+erb_render	1.008
+file_chmod	0.968
+file_rename	1.004
+hash_aref_dsym	0.973
+hash_aref_dsym_long	0.925
+hash_aref_fix	0.891
+hash_aref_flo	0.927
+hash_aref_miss	0.949
+hash_aref_str	0.828
+hash_aref_sym	0.961
+hash_aref_sym_long	0.995
+hash_flatten	0.863
+hash_ident_flo	0.898
+hash_ident_num	0.975
+hash_ident_obj	0.955
+hash_ident_str	0.985
+hash_ident_sym	0.990
+hash_keys	0.595
+hash_long	0.732
+hash_shift	0.068
+hash_shift_u16	0.004
+hash_shift_u24	0.004
+hash_shift_u32	0.004
+hash_small2	0.555
+hash_small4	0.580
+hash_small8	0.708
+hash_to_proc	0.915
+hash_values	0.574
+int_quo	1.004
+io_copy_stream_write	0.986
+io_copy_stream_write_socket	0.924
+io_file_create	0.921
+io_file_read	1.000
+io_file_write	1.006
+io_nonblock_noex	0.854
+io_nonblock_noex2	0.997
+io_pipe_rw	1.004
+io_select	0.995
+io_select2	1.004
+io_select3	0.793
+loop_for	1.015
+loop_generator	0.965
+loop_times	0.938
+loop_whileloop	0.980
+loop_whileloop2	0.943
+marshal_dump_flo	0.675
+marshal_dump_load_geniv	0.718
+marshal_dump_load_time	0.909
+require	2.151
+require_thread	6.060
+securerandom	0.828
+so_ackermann	0.995
+so_array	0.939
+so_binary_trees	0.997
+so_concatenate	0.988
+so_count_words	0.982
+so_exception	0.955
+so_fannkuch	0.984
+so_fasta	0.979
+so_k_nucleotide	0.662
+so_lists	0.917
+so_mandelbrot	0.959
+so_matrix	0.936
+so_meteor_contest	1.022
+so_nbody	0.939
+so_nested_loop	0.987
+so_nsieve	0.973
+so_nsieve_bits	1.037
+so_object	0.985
+so_partial_sums	0.979
+so_pidigits	1.068
+so_random	0.984
+so_reverse_complement	1.079
+so_sieve	1.002
+so_spectralnorm	0.939
+string_index	0.944
+string_scan_re	1.071
+string_scan_str	0.861
+time_subsec	1.028
+vm1_attr_ivar*	1.053
+vm1_attr_ivar_set*	0.953
+vm1_block*	0.950
+vm1_blockparam*	0.986
+vm1_blockparam_call*	1.006
+vm1_blockparam_pass*	0.992
+vm1_blockparam_yield*	1.049
+vm1_const*	1.036
+vm1_ensure*	0.603
+vm1_float_simple*	1.012
+vm1_gc_short_lived*	0.989
+vm1_gc_short_with_complex_long*	0.478
+vm1_gc_short_with_long*	1.155
+vm1_gc_short_with_symbol*	0.978
+vm1_gc_wb_ary*	1.000
+vm1_gc_wb_ary_promoted*	1.021
+vm1_gc_wb_obj*	1.036
+vm1_gc_wb_obj_promoted*	1.099
+vm1_ivar*	1.098
+vm1_ivar_set*	0.833
+vm1_length*	1.018
+vm1_lvar_init*	1.253
+vm1_lvar_set*	0.986
+vm1_neq*	1.006
+vm1_not*	1.377
+vm1_rescue*	1.014
+vm1_simplereturn*	1.002
+vm1_swap*	1.102
+vm1_yield*	0.971
+vm2_array*	0.993
+vm2_bigarray*	1.013
+vm2_bighash*	0.464
+vm2_case*	0.694
+vm2_case_lit*	0.695
+vm2_defined_method*	0.994
+vm2_dstr*	1.003
+vm2_eval*	0.872
+vm2_fiber_switch*	0.980
+vm2_method*	1.023
+vm2_method_missing*	0.990
+vm2_method_with_block*	0.997
+vm2_module_ann_const_set*	0.945
+vm2_module_const_set*	0.788
+vm2_mutex*	1.006
+vm2_newlambda*	1.000
+vm2_poly_method*	1.034
+vm2_poly_method_ov*	1.031
+vm2_poly_singleton*	1.041
+vm2_proc*	1.013
+vm2_raise1*	0.958
+vm2_raise2*	0.968
+vm2_regexp*	0.994
+vm2_send*	1.062
+vm2_string_literal*	0.972
+vm2_struct_big_aref_hi*	0.985
+vm2_struct_big_aref_lo*	1.099
+vm2_struct_big_aset*	1.025
+vm2_struct_big_href_hi*	0.997
+vm2_struct_big_href_lo*	1.037
+vm2_struct_big_hset*	0.971
+vm2_struct_small_aref*	1.049
+vm2_struct_small_aset*	1.019
+vm2_struct_small_href*	0.991
+vm2_struct_small_hset*	0.956
+vm2_super*	0.999
+vm2_unif1*	1.053
+vm2_zsuper*	1.016
+vm3_backtrace	0.955
+vm3_clearmethodcache	0.851
+vm3_gc	0.910
+vm3_gc_old_full	0.983
+vm3_gc_old_immediate	0.984
+vm3_gc_old_lazy	1.038
+vm_symbol_block_pass	0.973
+vm_thread_alive_check1	1.063
+vm_thread_close	0.941
+vm_thread_condvar1	1.024
+vm_thread_condvar2	1.030
+vm_thread_create_join	0.980
+vm_thread_mutex1	0.995
+vm_thread_mutex2	0.978
+vm_thread_mutex3	0.931
+vm_thread_pass	1.623
+vm_thread_pass_flood	0.882
+vm_thread_pipe	0.790
+vm_thread_queue	0.841
+vm_thread_sized_queue	0.966
+vm_thread_sized_queue2	0.988
+vm_thread_sized_queue3	0.970
+vm_thread_sized_queue4	0.917
+
+Log file: bmlog-20180706-155054.19279.tsv
