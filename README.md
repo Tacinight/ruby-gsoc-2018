@@ -3,6 +3,8 @@ This is a repository for Ruby GSOC 2018.
 More information on my project can be found at:
 https://summerofcode.withgoogle.com/projects/5822943355994112
 
+[Ticket in Ruby Issue Tracking System](https://bugs.ruby-lang.org/issues/14989)
+
 ## Transient Heap
 The first discussion of transient heap was opened by ko1(Koichi Sasada) at [Introduce 2nd GC heap named Transient heap](https://bugs.ruby-lang.org/issues/14858). In his prototype, he completed the implement for arrays, and the future work should also support the type String, Hash as well as Extend(shrink) policy for transient heap.
 
@@ -186,3 +188,6 @@ The related scripts and reports are:
 2. hash_batch_benchmark.rb : same as the one above expect changing array to hash. Reports are [this](report/hash_batch_benchmark_report_2B.txt) and [this](report/hash_batch_benchmark_report_5B.txt).
 3. array_vary_size_benchmark.rb : We hope the creation time of array is linear and not exponential. And the results show they are close to linear relation. Reports are [this](report/array_benchmark_report_N30_v1.txt) and [this](report/array_benchmark_report_N31.txt).
 4. hash_vary_size_benchmark.rb : same as the one above expect changing array to hash. Reports are [this](report/hash_benchmark_report_N30.txt) and [this](report/hash_benchmark_report_N32.txt).
+
+## LICENSE
+[License GPL V2.0](http://www.gnu.org/copyright/gpl.html)
