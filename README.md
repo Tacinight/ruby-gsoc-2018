@@ -6,11 +6,12 @@ https://summerofcode.withgoogle.com/projects/5822943355994112
 [Ticket in Ruby Issue Tracking System](https://bugs.ruby-lang.org/issues/14989)
 
 ## Transient Heap
-The first discussion of transient heap was opened by ko1(Koichi Sasada) at [Introduce 2nd GC heap named Transient heap](https://bugs.ruby-lang.org/issues/14858). In his prototype, he completed the implement for arrays, and the future work should also support the type String, Hash as well as Extend(shrink) policy for transient heap.
+The first discussion of transient heap was opened by ko1(Koichi Sasada) at [Introduce 2nd GC heap named Transient heap](https://bugs.ruby-lang.org/issues/14858). In his prototype, he completed the implement for arrays, and the future work should also support the type String, Hash as well as extend (shrink) policy for transient heap.
 
 My work here is adding support for Hash so that transient heap can allocate space for Hash. I encounted some difficults that had to be handled.
-1. Hash type objects use st_table to store elements, the correlation between those two is weak. For transient heap, it has to know the ruby type of the objects.
-2. Transient heap is based on the hypothesis that most of objects die at a young age. To understand the issue with first need to survey the distribution of hash size.
+1. Hash type objects use `struct st_table` to store elements, but the correlation between those two is weak. For transient heap, it has to know the ruby type of the objects. The ruby builtin types are represented as something like T_ARRAY, T_HASH. As I mentioned above, current transient heap only supports array(that is T_ARRAY). If we support Hash in transient heap, we need mark Hash in its flag field(`RHASH(hash)->basic.flag`) when transient heap allocates space for its member `struct st_table`. It is hard because Hash and `struct st_table` are quite independent as they are located into two separate files. To do so, it needs modify the interfaces prefixing with 'st', which is almost impossible due to `struct st_table` being used as a general purpose data structure in internal ruby. In this case, the compromise solution is add a dedicated data structure for Hash and it also needs to convert to `struct st_table` when necessary.
+2. In our mind, the dedicated data structure is an array which is simple and can cover most cases. It is better if it is a fixed-size array so we don't have to resize it. To determine the size of the array, we need to survey the distribution of hash size.
+3. Most of objects die at a young age. Transient heap is based on the hypothesis. After complete the coding part, We also need to know if this data structure has made a good use of transient heap. In other words, the newly introduced data structure will reduce the times of malloc/free, the conversion from malloc/free to transient_alloc will help ruby better manage its memory.
 
 ### The distribution of hash size
 #### Implement
@@ -160,6 +161,24 @@ Related patch is [here](patch/0003-integrate-data-to-hash-flag.patch) which base
 
 ### Benchmark results
 I execuated comprehensive benchmark test based on official benchmark tool - [benchmark-driver](https://github.com/benchmark-driver/benchmark-driver).
+
+#### Berief Summary
+The outcome shows a degree fluctuation of the performance caused by the introduction of the patch. Among these results, the notable performance improvements are:
+- so_fannkuch (1.52x)
+- vm_thread_pass (1.53x)
+
+and there are also performance degradation among those tests:
+
+- hash_small2 (0.24x)
+- hash_small4 (0.28x)
+- hash_small8 (0.49x)
+- require_thread (0.42x)
+- vm1_length (0.63x)
+- vm1_not (0.68x)
+  
+for those not so good test results, I need check what caused those degradation and fix the problems.
+
+### Results list
 1. [linear_table_benchmark](https://docs.google.com/spreadsheets/d/18JzY-q-boOZFu_GTwraRXSTJJVbt9Wmg7M2P4-8g41o/edit?usp=sharing), includes the `make benchmark` results of trunk vs. v1(the original version) vs. v2(the variant 1).
 2. [transient hash benchmark](https://docs.google.com/spreadsheets/d/19074A0H0nwBQoumTb0aF-k9_a3GBBLA9NnFIpPGraPU/edit?usp=sharing), includes the `make benchmark` results of trunk vs. transient_heap(based on v1) vs. integrated flag
 3. [linear_table_variant_benchmark](https://docs.google.com/spreadsheets/d/1Ag6DoAsmTNJkt3nmHyfXRQgy6fLhEnZJQF2G5GbykLc/edit?usp=sharing), includes the micro-benchmark results of trunk vs. v1 vs. v2 vs. v3 vs. v4. The used benchrmark scripts are located at microbench directory.
@@ -169,7 +188,7 @@ I execuated comprehensive benchmark test based on official benchmark tool - [ben
 
 ### Future work
 1. In [transient hash benchmark](https://docs.google.com/spreadsheets/d/19074A0H0nwBQoumTb0aF-k9_a3GBBLA9NnFIpPGraPU/edit?usp=sharing), we saw a preformance degradation compare to the preformance improvement in [linear_table_benchmark](https://docs.google.com/spreadsheets/d/18JzY-q-boOZFu_GTwraRXSTJJVbt9Wmg7M2P4-8g41o/edit?usp=sharing) in same items. It needs to be analyzed and to be solved.
-
+2. Check conversion rate from small st_table to linear table and to see does it make good use of the new mechanism. 
 
 ## Cache Line Hash Table
 Besides the efforts for transient heap, my work in this period also includes a attempt to introduce a hash table algorithm named [Cache Line Hash Table](https://github.com/LPD-EPFL/CLHT).
@@ -180,7 +199,7 @@ The attempt failed due to two main reasions:
 
 Hence the development for cache line hash table stopped. The [patch](patch/0001-introduce-cache-line-hash-table.patch) and code is reversed in this repository. Benchmark results are saved as `report/bmlog-20180701-152738.21712.tsv` and `report/bmlog-20180706-155054.19279.tsv`.
 
-## other work
+## Other work
 The one goal of this project is explore the gc performance when Ruby allocated a large number of objects. We expected abnormal overheads when memory is under very high pressure or running out. But the most significant overhead is reallocation when array or hash resizing its capacity. Otherwise, the time cost for operations like insertion changed as expected only with acceptable overheads.
 
 The related scripts and reports are:
