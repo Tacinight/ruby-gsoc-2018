@@ -190,4 +190,4 @@ The related scripts and reports are:
 4. hash_vary_size_benchmark.rb : same as the one above expect changing array to hash. Reports are [this](report/hash_benchmark_report_N30.txt) and [this](report/hash_benchmark_report_N32.txt).
 
 ## LICENSE
-[License GPL V2.0](http://www.gnu.org/copyright/gpl.html)
+[BSD-2-Clause](https://opensource.org/licenses/BSD-2-Clause)
